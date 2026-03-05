@@ -46,11 +46,28 @@ cd consultant-invoicing
 # 2. Install dependencies
 uv sync
 
-# 3. Run the app
+# 3. Launch with the management script (recommended)
+./manage.sh
+```
+
+The management script gives you an interactive menu:
+
+| Key | Action |
+|-----|--------|
+| `W` | Start app and open browser automatically |
+| `S` | Start app (terminal only) |
+| `K` | Stop the running app |
+| `L` | Tail live logs |
+| `B` | Create a backup |
+| `X` | Exit |
+
+Or run directly without the script:
+
+```bash
 uv run python app/main.py
 ```
 
-Then open your browser at **http://localhost:8081**
+Then open **http://localhost:8081** in your browser.
 
 ## Project Structure
 
