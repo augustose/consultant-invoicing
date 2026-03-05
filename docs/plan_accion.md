@@ -1,43 +1,50 @@
-# Plan de Acción Estratégico - Accounting AI
+# Strategic Action Plan
 
-Este plan se centra en la definición y validación antes de la ejecución técnica.
-
-## Fase 0: Definición y Diseño %completed: 100%
-- [x] Definir el alcance total de las funcionalidades (ver `docs/funcionalidades.md`).
-- [x] Validar las User Stories con el usuario (ver `docs/user_stories.md`).
-- [x] Confirmar el flujo de datos y arquitectura técnica (ver `docs/decisiones.md`).
-- [x] Organizar estructura de directorios (docs, app, assets, examples, data).
-
-## Fase 1: Cimentación Técnica %completed: 100%
-- [x] Crear script de mantenimiento interactivo (`manage.sh`).
-- [x] Configurar entorno **Python + uv** y **NiceGUI**.
-- [x] Implementar esquema de base de datos con **SQLModel** (SQLite).
-- [x] Definir el **Plan de Cuentas Estándar** para Québec.
-
-## Phase 2: Core Invoicing & CRM (COMPLETED)
-- [x] CRUD Customers (NiceGUI Modals)
-- [x] CRUD Services/Products
-- [x] Dynamic Invoice Creation (Line Items)
-- [x] Automatic Quebec Tax calculation (TPS/TVQ)
-- [x] Dynamic Dashboard with real metrics
-
-## Phase 3: Recurring Invoices & Automation (COMPLETED)
-- [x] Recurring Profile Database Model
-- [x] Subscriptions & Retainers management view
-- [x] Background Invoicing Engine (Auto-drafts)
-- [x] "Mark as Paid" and real-time dashboard updates
-
-## Fase 4: Pulido Premium & Portabilidad
-- [ ] Soporte Multi-idioma (i18n English/Spanish).
-- [ ] Módulo de Importación/Exportación de datos.
-- [ ] Animaciones y transiciones fluidas.
-- [ ] Dashboard analítico y reportes.
-
-## Fase 5: Inteligencia y Voz (Segunda Etapa)
-- [ ] Integración con LLM (Anthropic Claude o Google Gemini).
-- [ ] Procesamiento de comandos de voz para creación de facturas.
-- [ ] Consultas en lenguaje natural sobre datos contables.
+This plan focuses on design validation before technical execution.
 
 ---
-### Estado Actual:
-Estamos en la **Fase 2**. Hemos inicializado la base de datos con el Plan de Cuentas y ya tenemos la gestión de Clientes y Servicios funcionando. El siguiente paso es el motor de facturación.
+
+## Phase 0: Definition & Design — COMPLETED
+- [x] Define the full feature scope (see `docs/funcionalidades.md`).
+- [x] Validate user stories (see `docs/user_stories.md`).
+- [x] Confirm data flow and technical architecture (see `docs/decisiones.md`).
+- [x] Organize directory structure (docs, app, assets, examples, data).
+
+## Phase 1: Technical Foundation — COMPLETED
+- [x] Create interactive management script (`manage.sh`).
+- [x] Configure **Python + uv** environment and **NiceGUI**.
+- [x] Implement database schema with **SQLModel** (SQLite).
+- [x] Define the standard **Chart of Accounts** for Québec.
+
+## Phase 2: Core Invoicing & CRM — COMPLETED
+- [x] Customer CRUD with inline editing.
+- [x] Services CRUD with inline editing and usage guards.
+- [x] Accounts CRUD with system account protection.
+- [x] Dynamic invoice creation with line items.
+- [x] Automatic Québec tax calculation (TPS/TVQ).
+- [x] Invoice workflow: Draft → Sent → Paid → Cancelled.
+- [x] HTML invoice template (Jinja2) with browser print-to-PDF.
+
+## Phase 3: Recurring Invoices & Automation — COMPLETED
+- [x] Recurring profile database model.
+- [x] Subscriptions & retainers management view.
+- [x] Background invoicing engine (auto-drafts).
+- [x] Dashboard with real-time metrics and monthly revenue chart (Plotly).
+
+## Phase 4: Reports & Polish — IN PROGRESS
+- [x] Sales report with preset and custom date ranges.
+- [x] Tax report (TPS/TVQ breakdown per invoice).
+- [ ] Data import/export module (CSV/JSON for accountant).
+- [ ] Multi-language i18n completion (EN/ES).
+- [ ] Smooth animations and transitions.
+
+## Phase 5: AI & Voice — PLANNED
+- [ ] LLM integration (Anthropic Claude or Google Gemini).
+- [ ] Voice command processing for invoice creation.
+- [ ] Natural language queries over accounting data.
+- [ ] MCP server integration.
+
+---
+
+### Current Status
+Phases 0–3 complete. Phase 4 reports are done. Remaining Phase 4 work: data export and i18n polish.

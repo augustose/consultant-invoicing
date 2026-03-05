@@ -1,8 +1,10 @@
-# Registro de Decisiones
+# Decision Log
 
-Este documento registra las decisiones arquitectónicas y de diseño tomadas durante el desarrollo del Sistema de Contabilidad y Facturación para Consultores Independientes.
+This document records the architectural and design decisions made during development of the Accounting & Invoicing System for Independent Consultants.
 
-## 2026-03-04: Definición Inicial del Stack y Arquitectura
+---
+
+## 2026-03-04: Initial Stack & Architecture Decisions
 
 ### 1. Technology & Language Standards
 **Decision**: Use **Python 3.11+** with **NiceGUI**, managed by **uv**. All code, comments, variable names, and technical documentation will be in **English**.
@@ -12,21 +14,21 @@ Este documento registra las decisiones arquitectónicas y de diseño tomadas dur
 **Decision**: Use **SQLite 3** with **SQLModel**.
 **Reason**: SQLModel simplifies database interactions by treating tables as Python classes. It provides auto-completion and type-safety, which is crucial for financial data integrity. It's the most robust way to manage a complex Chart of Accounts.
 
-### 3. Estética y Diseño
-**Decisión**: Inspirado en **Wave Apps** pero con toques de **Glassmorphism** y micro-animaciones.
-**Razón**: Las imágenes de referencia muestran Wave Apps. Queremos superar esa estética con un diseño más moderno, limpio y "Premium" que use una paleta de colores sofisticada (Deep Blue, Slate, y acentos esmeralda).
+### 3. Visual Design & Aesthetics
+**Decision**: Inspired by **Wave Apps** with touches of glassmorphism and micro-animations.
+**Reason**: The reference images show Wave Apps. We want to surpass that aesthetic with a more modern, clean, and "premium" design using a sophisticated colour palette (deep blue, slate, emerald accents).
 
-### 4. Iconografía y Animaciones
-**Decisión**: Usar **Lucide React** para iconos y **Framer Motion** para transiciones.
-**Razón**: Lucide ofrece una estética de trazo fino que se siente muy moderna y "Premium". Framer Motion permite animaciones fluidas y naturales que mejoran la experiencia de usuario (UX).
+### 4. Iconography & Animations
+**Decision**: Use **Material Icons** (via NiceGUI/Quasar) for icons and CSS transitions for animations.
+**Reason**: Material Icons provide a clean, modern look that integrates natively with NiceGUI. CSS transitions are lightweight and performant without additional dependencies.
 
-### 5. Gestión y Mantenimiento
-**Decisión**: Script interactivo `manage.sh` en ZSH.
-**Razón**: Facilita la experiencia de usuario para tareas técnicas (Start, Backup, Docs) con un solo toque de tecla, manteniendo el ambiente de desarrollo ordenado.
+### 5. Dev Management Script
+**Decision**: Interactive `manage.sh` script in ZSH.
+**Reason**: Simplifies the developer/user experience for common tasks (Start, Backup, Logs, Docs) with a single keypress, keeping the environment clean and well-organized.
 
-### 6. Estructura de Datos y Motor Contable
-**Decisión**: Entidades principales integradas: `Invoices`, `Payments`, `Customers`, `Products`, y un `Chart of Accounts` basado en categorías de Activos, Pasivos, Ingresos y Gastos.
-**Razón**: Basado en las funcionalidades de Wave (vistas en las imágenes), el sistema debe permitir la categorización de transacciones para reportes contables legibles por profesionales.
+### 6. Data Model & Accounting Engine
+**Decision**: Core entities: `Invoice`, `Customer`, `Service`, `Account` (Chart of Accounts), `RecurringProfile`, and `CompanySettings`.
+**Reason**: Based on Wave Apps functionality (seen in the reference images), the system must allow transaction categorization for professional accounting reports readable by accountants.
 
 ### 7. Extensibility & Path to AI (MCP)
 **Decision**: Architecture follows a "Local-First" approach with a clear separation between the Data Layer (SQLite) and the UI.
@@ -42,23 +44,25 @@ Este documento registra las decisiones arquitectónicas y de diseño tomadas dur
 
 ### 9. Data Privacy — Exclude All User Data from Git
 **Decision**: The entire `data/` directory is excluded from version control via `.gitignore` (`data/*`), with only a `data/.gitkeep` file tracked to preserve the directory structure.
-**Reason**: The `data/` folder contains the SQLite database (`accounting.db`), generated PDFs, exported files, and custom invoice templates — all of which are **private user data** that must never be pushed to a public repository. The `.gitkeep` ensures the directory exists after a fresh clone.
+**Reason**: The `data/` folder contains the SQLite database (`accounting.db`), exported files, and custom invoice templates — all of which are **private user data** that must never be pushed to a public repository. The `.gitkeep` ensures the directory exists after a fresh clone.
 
 **Affected files**:
-- `.gitignore` — changed from individual patterns (`data/*.db`, `data/*.sqlite`, `data/exports/`) to a blanket `data/*` with `!data/.gitkeep` exception.
+- `.gitignore` — changed from individual patterns to a blanket `data/*` with `!data/.gitkeep` exception.
 - `data/.gitkeep` — created as an empty placeholder.
 
 ### 10. Idempotent Database Auto-Initialization on Startup
-**Decision**: `main.py` now calls `create_db_and_tables()` and `seed_initial_data()` on every application startup.
-**Reason**: Previously, the database was only initialized when running `database.py` directly as a script. This meant a fresh clone would crash on startup because no database existed. The auto-init is **idempotent** — it's safe to run on every startup:
+**Decision**: `main.py` calls `create_db_and_tables()` and `seed_initial_data()` on every application startup.
+**Reason**: Previously, the database was only initialized when running `database.py` directly. A fresh clone would crash on startup because no database existed. The auto-init is **idempotent** — safe to run on every startup:
 - `os.makedirs("data", exist_ok=True)` → creates the folder only if missing.
 - `create_db_and_tables()` → SQLModel's `create_all` skips tables that already exist.
-- `seed_initial_data()` → checks if records exist before inserting defaults (guard clause on line 122-124 of `database.py`).
+- `seed_initial_data()` → checks if records exist before inserting defaults.
 
 **Result**: Existing data is never overwritten. The init is a no-op on normal runs but acts as a safety net if the DB is missing.
 
-### 11. Bug Fix — SyntaxError in `template_utils.py`
-**Decision**: Fixed indentation in `TemplateManager.render_invoice()`.
-**Problem**: The code between `env.get_template()` (line 44) and `template.render()` (line 84) — including the `items_html` builder and `context` dictionary — was accidentally de-indented, breaking the `try/except` block structure. Python raised: `SyntaxError: expected 'except' or 'finally' block` at line 47.
-**Fix**: Re-indented lines 46-83 to be properly inside the `try` block, restoring the intended error handling flow.
+### 11. Bug Fix — PDF Generation Removed
+**Decision**: Removed ReportLab PDF generation entirely. PDF export now uses browser native print-to-PDF via the `/preview/{id}` HTML route.
+**Reason**: ReportLab added complexity and a heavy dependency for functionality the browser already provides natively. The Jinja2 HTML template approach is more flexible and produces better-looking output.
 
+### 12. Invoice Workflow Simplification
+**Decision**: Invoice statuses are **Draft → Sent → Paid → Cancelled**. Removed "Overdue" as a status.
+**Reason**: "Overdue" was a derived state (date-based), not a user-driven action. The simplified workflow maps directly to consultant actions: create a draft, send it, mark it paid, or cancel it.
