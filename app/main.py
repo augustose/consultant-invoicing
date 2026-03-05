@@ -809,7 +809,9 @@ def reports_page():
                     ui.plotly(fig).classes('w-full')
 
     def render_aged_receivables(container, invoices):
+        # Always receives all_invoices (unfiltered) — AR exposure should show all outstanding, not period-scoped
         container.clear()
+        today = datetime.today()
         unpaid = [i for i in invoices if i.status in ('Sent', 'Overdue')]
 
         buckets = {'Current (0\u201330d)': [], '31\u201360d': [], '61\u201390d': [], '90d+': []}
@@ -891,7 +893,7 @@ def reports_page():
         render_revenue_trend(trend_content, filtered)
         render_tax_report(tax_content, filtered)
         render_income_by_customer(cust_content, filtered)
-        render_aged_receivables(aged_content, all_invoices)
+        render_aged_receivables(aged_content, all_invoices)  # unfiltered: shows full AR exposure
 
     with ui.column().classes('w-full p-8 max-w-7xl mx-auto animate-fade-in'):
         ui.label('Reports').classes('text-4xl font-extrabold text-slate-900 dark:text-slate-100 mb-2')
