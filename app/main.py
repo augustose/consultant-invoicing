@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from nicegui import app, ui
 from sqlmodel import Session, select
 from starlette.responses import HTMLResponse
-from database import engine, Account, TaxRate, AccountType, Customer, Service, Invoice, InvoiceItem, RecurringProfile, CompanySettings
+from database import engine, Account, TaxRate, AccountType, Customer, Service, Invoice, InvoiceItem, RecurringProfile, CompanySettings, Expense
 from template_utils import TemplateManager
 import log_config  # noqa: F401 — initializes logging on import
 from loguru import logger

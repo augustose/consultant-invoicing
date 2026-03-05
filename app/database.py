@@ -105,6 +105,19 @@ class RecurringProfile(SQLModel, table=True):
     auto_send: bool = Field(default=False)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
+class Expense(SQLModel, table=True):
+    """Business expenses linked to Chart of Accounts."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    date: datetime = Field(default_factory=datetime.utcnow)
+    description: str
+    amount: float = Field(default=0.0)  # pre-tax subtotal
+    tps: float = Field(default=0.0)     # TPS amount (5% of amount if applicable)
+    tvq: float = Field(default=0.0)     # TVQ amount (9.975% of amount if applicable)
+    total: float = Field(default=0.0)   # amount + tps + tvq
+    account_id: int = Field(foreign_key="account.id")
+    notes: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
 # --- Database Engine ---
 
 sqlite_file_name = "data/accounting.db"
