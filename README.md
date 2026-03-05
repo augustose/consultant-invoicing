@@ -38,6 +38,8 @@ A local-first invoicing and accounting app for independent consultants, built wi
 
 ## Getting Started
 
+### macOS / Linux
+
 ```bash
 # 1. Clone the repo
 git clone https://github.com/augustose/consultant-invoicing.git
@@ -50,15 +52,35 @@ uv sync
 ./manage.sh
 ```
 
-The management script gives you an interactive menu:
+### Windows
+
+```powershell
+# 1. Install uv (if not already installed)
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# 2. Clone the repo
+git clone https://github.com/augustose/consultant-invoicing.git
+cd consultant-invoicing
+
+# 3. Install dependencies
+uv sync
+
+# 4. Launch with the management script (recommended)
+manage.bat
+```
+
+### Management Script
+
+Both `manage.sh` (macOS/Linux) and `manage.bat` (Windows) provide the same interactive menu:
 
 | Key | Action |
 |-----|--------|
 | `W` | Start app and open browser automatically |
 | `S` | Start app (terminal only) |
 | `K` | Stop the running app |
-| `L` | Tail live logs |
+| `L` | View live logs |
 | `B` | Create a backup |
+| `D` | Open docs folder |
 | `X` | Exit |
 
 Or run directly without the script:
