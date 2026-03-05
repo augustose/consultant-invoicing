@@ -392,8 +392,6 @@ def expenses_page():
         'All Time':   (datetime(2000, 1, 1), today),
     }
 
-    state = {'preset': 'This Month', 'from': first_this_month, 'to': today}
-
     with Session(engine) as s:
         expense_accounts = s.exec(
             select(Account).where(Account.type == AccountType.EXPENSE, Account.is_active == True)
@@ -458,6 +456,8 @@ def expenses_page():
                         ui.notify('Invalid date format. Use YYYY-MM-DD', color='red-500'); return
 
                     amt = float(amount_input.value or 0)
+                    if amt <= 0:
+                        ui.notify('Amount must be greater than zero', color='red-500'); return
                     tps, tvq, total = compute_total(amt, tps_check.value, tvq_check.value)
 
                     with Session(engine) as s:
@@ -509,8 +509,6 @@ def expenses_page():
         # ── Expenses Table ──
         table_container = ui.column().classes('w-full')
 
-        acc_name_map = {acc.id: f"{acc.code} — {acc.name}" for acc in expense_accounts}
-
         def refresh_table():
             table_container.clear()
             d_from = filter_state['from']
@@ -520,6 +518,8 @@ def expenses_page():
                     select(Expense).where(Expense.date >= d_from, Expense.date <= d_to)
                     .order_by(Expense.date.desc())
                 ).all()
+                fresh_accounts = s.exec(select(Account).where(Account.type == AccountType.EXPENSE)).all()
+            acc_name_map = {acc.id: f"{acc.code} — {acc.name}" for acc in fresh_accounts}
 
             with table_container:
                 if not expenses:
