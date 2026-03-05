@@ -599,132 +599,312 @@ def reports_page():
         all_customers = s.exec(select(Customer)).all()
     cust_map = {c.id: c.name for c in all_customers}
 
-    # ── Render function (defined before any call) ──
-    def render_reports(container, invoices):
+    # ── Helper: expandable report card ──
+    def report_card(icon, title, description, color='indigo-600'):
+        expanded = {'open': False}
+        with ui.card().classes('w-full p-0 premium-card overflow-hidden'):
+            with ui.row().classes('w-full items-center gap-4 p-5 cursor-pointer') as header:
+                ui.icon(icon, color=color, size='24px')
+                with ui.column().classes('flex-1'):
+                    ui.label(title).classes('text-base font-bold text-slate-800 dark:text-slate-200')
+                    ui.label(description).classes('text-xs text-slate-400')
+                chevron = ui.icon('expand_more', size='24px', color='slate-400')
+            content = ui.column().classes('w-full px-5 pb-5 gap-4')
+            content.set_visibility(False)
+
+        def toggle():
+            expanded['open'] = not expanded['open']
+            content.set_visibility(expanded['open'])
+            chevron.name = 'expand_less' if expanded['open'] else 'expand_more'
+
+        header.on('click', toggle)
+        return content
+
+    def section_header(title):
+        ui.label(title).classes('text-xs font-black text-slate-400 uppercase tracking-widest mt-4 mb-1 px-1')
+
+    # ── Report renderers ──
+    def render_sales_summary(container, invoices):
         container.clear()
         paid_invs = [i for i in invoices if i.status == 'Paid']
         sent_invs = [i for i in invoices if i.status == 'Sent']
         canc_invs = [i for i in invoices if i.status == 'Cancelled']
-
         total_invoiced    = sum(i.total for i in invoices if i.status != 'Cancelled')
         total_paid        = sum(i.total for i in paid_invs)
         total_outstanding = sum(i.total for i in sent_invs)
-        paid_subtotal     = sum(i.subtotal for i in paid_invs)
-        tps_collected     = paid_subtotal * TPS_RATE
-        tvq_collected     = paid_subtotal * TVQ_RATE
 
         with container:
-            # ── SALES REPORT ──
-            with ui.column().classes('w-full gap-4'):
-                with ui.row().classes('items-center gap-3'):
-                    ui.icon('receipt_long', color='indigo-600', size='24px')
-                    ui.label('Sales Report').classes('text-2xl font-bold text-slate-800 dark:text-slate-200')
+            with ui.row().classes('w-full gap-4'):
+                for label, val, color, icon in [
+                    ('Total Invoiced', total_invoiced,    'indigo-600',  'calculate'),
+                    ('Collected',      total_paid,        'emerald-600', 'check_circle'),
+                    ('Outstanding',    total_outstanding, 'amber-600',   'hourglass_top'),
+                    ('Cancelled',      sum(i.total for i in canc_invs), 'red-400', 'cancel'),
+                ]:
+                    with ui.card().classes('flex-1 p-5 bg-slate-50 dark:bg-slate-800 rounded-xl'):
+                        with ui.row().classes('items-center gap-2 mb-1'):
+                            ui.icon(icon, color=color, size='16px')
+                            ui.label(label).classes('text-[10px] font-black text-slate-400 uppercase tracking-widest')
+                        ui.label(f'${val:,.2f}').classes('text-2xl font-black text-slate-900 dark:text-slate-100')
 
-                with ui.row().classes('w-full gap-4'):
-                    for label, val, color, icon in [
-                        ('Total Invoiced', total_invoiced,    'indigo-600',  'calculate'),
-                        ('Collected',      total_paid,        'emerald-600', 'check_circle'),
-                        ('Outstanding',    total_outstanding, 'amber-600',   'hourglass_top'),
-                        ('Cancelled',      sum(i.total for i in canc_invs), 'red-400', 'cancel'),
-                    ]:
-                        with ui.card().classes('flex-1 p-6 premium-card'):
-                            with ui.row().classes('items-center gap-2 mb-2'):
-                                ui.icon(icon, color=color, size='18px')
-                                ui.label(label).classes('text-[10px] font-black text-slate-400 uppercase tracking-widest')
-                            ui.label(f'${val:,.2f}').classes('text-3xl font-black text-slate-900 dark:text-slate-100')
+            cols = [
+                {'name': 'num',      'label': '#',        'field': 'number',    'align': 'left'},
+                {'name': 'cust',     'label': 'Client',   'field': 'cname',     'align': 'left'},
+                {'name': 'date',     'label': 'Date',     'field': 'date_fmt',  'align': 'left'},
+                {'name': 'status',   'label': 'Status',   'field': 'status',    'align': 'center'},
+                {'name': 'subtotal', 'label': 'Subtotal', 'field': 'sub_fmt',   'align': 'right'},
+                {'name': 'taxes',    'label': 'Taxes',    'field': 'tax_fmt',   'align': 'right'},
+                {'name': 'total',    'label': 'Total',    'field': 'total_fmt', 'align': 'right'},
+            ]
+            rows = [{
+                **i.model_dump(),
+                'cname':     cust_map.get(i.customer_id, '?'),
+                'date_fmt':  i.date.strftime('%Y-%m-%d'),
+                'sub_fmt':   f'${i.subtotal:,.2f}',
+                'tax_fmt':   f'${i.tax_total:,.2f}',
+                'total_fmt': f'${i.total:,.2f}',
+            } for i in invoices]
+            if rows:
+                t = ui.table(columns=cols, rows=rows, row_key='id').classes('w-full border-none shadow-none')
+                t.add_slot('body-cell-status', '''<q-td :props="props"><q-badge :color="props.row.status === 'Paid' ? 'green' : (props.row.status === 'Sent' ? 'indigo' : (props.row.status === 'Cancelled' ? 'red' : 'amber'))" :style="{padding:'4px 12px',borderRadius:'999px',fontWeight:'700',fontSize:'10px'}">{{ props.row.status }}</q-badge></q-td>''')
+            else:
+                with ui.column().classes('w-full items-center p-8'):
+                    ui.icon('search_off', size='40px', color='slate-300')
+                    ui.label('No invoices in this period').classes('text-slate-400 text-sm mt-2')
 
-                with ui.card().classes('w-full p-0 premium-card overflow-hidden'):
+    def render_revenue_trend(container, invoices):
+        container.clear()
+        paid = [i for i in invoices if i.status == 'Paid']
+        monthly = defaultdict(float)
+        for inv in paid:
+            key = inv.date.strftime('%b %Y')
+            monthly[key] += inv.total
+        sorted_months = sorted(monthly.keys(), key=lambda m: datetime.strptime(m, '%b %Y'))
+        vals = [monthly[m] for m in sorted_months]
+
+        with container:
+            if not sorted_months:
+                with ui.column().classes('w-full items-center p-8'):
+                    ui.icon('bar_chart', size='40px', color='slate-300')
+                    ui.label('No paid invoices in this period').classes('text-slate-400 text-sm mt-2')
+                return
+            fig = go.Figure(go.Bar(
+                x=sorted_months,
+                y=vals,
+                marker_color='#4f46e5',
+                text=[f'${v:,.0f}' for v in vals],
+                textposition='outside',
+            ))
+            fig.update_layout(
+                margin=dict(t=20, b=20, l=20, r=20),
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                xaxis=dict(showgrid=False, tickfont=dict(size=11)),
+                yaxis=dict(showgrid=True, gridcolor='#e2e8f0', tickprefix='$', tickfont=dict(size=11)),
+                height=280,
+            )
+            ui.plotly(fig).classes('w-full')
+
+    def render_tax_report(container, invoices):
+        container.clear()
+        paid_invs = [i for i in invoices if i.status == 'Paid']
+        paid_subtotal = sum(i.subtotal for i in paid_invs)
+        tps_collected = paid_subtotal * TPS_RATE
+        tvq_collected = paid_subtotal * TVQ_RATE
+
+        with container:
+            with ui.row().classes('w-full gap-4'):
+                for label, val, sub, color in [
+                    ('TPS Collected',   tps_collected,  f'5% on ${paid_subtotal:,.2f}',    'blue-600'),
+                    ('TVQ Collected',   tvq_collected,  f'9.975% on ${paid_subtotal:,.2f}', 'purple-600'),
+                    ('Total Taxes Due', tps_collected + tvq_collected, 'TPS + TVQ',         'emerald-600'),
+                    ('Taxable Revenue', paid_subtotal,  f'{len(paid_invs)} paid invoices',  'indigo-600'),
+                ]:
+                    with ui.card().classes('flex-1 p-5 bg-slate-50 dark:bg-slate-800 rounded-xl'):
+                        ui.label(label).classes('text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1')
+                        ui.label(f'${val:,.2f}').classes('text-2xl font-black text-slate-900 dark:text-slate-100')
+                        ui.label(sub).classes('text-xs text-slate-400 mt-1')
+
+            tax_cols = [
+                {'name': 'num',      'label': '#',            'field': 'number',   'align': 'left'},
+                {'name': 'cust',     'label': 'Client',       'field': 'cname',    'align': 'left'},
+                {'name': 'date',     'label': 'Date',         'field': 'date_fmt', 'align': 'left'},
+                {'name': 'subtotal', 'label': 'Subtotal',     'field': 'sub_fmt',  'align': 'right'},
+                {'name': 'tps',      'label': 'TPS (5%)',     'field': 'tps_fmt',  'align': 'right'},
+                {'name': 'tvq',      'label': 'TVQ (9.975%)', 'field': 'tvq_fmt',  'align': 'right'},
+                {'name': 'total',    'label': 'Total',        'field': 'total_fmt','align': 'right'},
+            ]
+            tax_rows = [{
+                **i.model_dump(),
+                'cname':     cust_map.get(i.customer_id, '?'),
+                'date_fmt':  i.date.strftime('%Y-%m-%d'),
+                'sub_fmt':   f'${i.subtotal:,.2f}',
+                'tps_fmt':   f'${i.subtotal * TPS_RATE:,.2f}',
+                'tvq_fmt':   f'${i.subtotal * TVQ_RATE:,.2f}',
+                'total_fmt': f'${i.total:,.2f}',
+            } for i in paid_invs]
+            if tax_rows:
+                ui.table(columns=tax_cols, rows=tax_rows, row_key='id').classes('w-full border-none shadow-none')
+            else:
+                with ui.column().classes('w-full items-center p-8'):
+                    ui.icon('receipt_long', size='40px', color='slate-300')
+                    ui.label('No paid invoices in this period').classes('text-slate-400 text-sm mt-2')
+
+    def render_income_by_customer(container, invoices):
+        container.clear()
+        paid_invs = [i for i in invoices if i.status == 'Paid']
+        by_cust = defaultdict(lambda: {'count': 0, 'subtotal': 0.0, 'taxes': 0.0, 'total': 0.0})
+        for inv in paid_invs:
+            cname = cust_map.get(inv.customer_id, 'Unknown')
+            by_cust[cname]['count']    += 1
+            by_cust[cname]['subtotal'] += inv.subtotal
+            by_cust[cname]['taxes']    += inv.tax_total
+            by_cust[cname]['total']    += inv.total
+
+        with container:
+            if not by_cust:
+                with ui.column().classes('w-full items-center p-8'):
+                    ui.icon('group', size='40px', color='slate-300')
+                    ui.label('No paid invoices in this period').classes('text-slate-400 text-sm mt-2')
+                return
+
+            sorted_custs = sorted(by_cust.items(), key=lambda x: x[1]['total'], reverse=True)
+
+            with ui.row().classes('w-full gap-6 items-start'):
+                with ui.column().classes('flex-1'):
                     cols = [
-                        {'name': 'num',      'label': '#',        'field': 'number',    'align': 'left'},
-                        {'name': 'cust',     'label': 'Client',   'field': 'cname',     'align': 'left'},
-                        {'name': 'date',     'label': 'Date',     'field': 'date_fmt',  'align': 'left'},
-                        {'name': 'status',   'label': 'Status',   'field': 'status',    'align': 'center'},
-                        {'name': 'subtotal', 'label': 'Subtotal', 'field': 'sub_fmt',   'align': 'right'},
-                        {'name': 'taxes',    'label': 'Taxes',    'field': 'tax_fmt',   'align': 'right'},
-                        {'name': 'total',    'label': 'Total',    'field': 'total_fmt', 'align': 'right'},
+                        {'name': 'cust',     'label': 'Customer',   'field': 'cust',      'align': 'left'},
+                        {'name': 'count',    'label': '# Invoices', 'field': 'count',     'align': 'center'},
+                        {'name': 'subtotal', 'label': 'Subtotal',   'field': 'sub_fmt',   'align': 'right'},
+                        {'name': 'taxes',    'label': 'Taxes',      'field': 'tax_fmt',   'align': 'right'},
+                        {'name': 'total',    'label': 'Total Paid', 'field': 'total_fmt', 'align': 'right'},
                     ]
                     rows = [{
-                        **i.model_dump(),
-                        'cname':     cust_map.get(i.customer_id, '?'),
-                        'date_fmt':  i.date.strftime('%Y-%m-%d'),
-                        'sub_fmt':   f'${i.subtotal:,.2f}',
-                        'tax_fmt':   f'${i.tax_total:,.2f}',
-                        'total_fmt': f'${i.total:,.2f}',
-                    } for i in invoices]
-                    if rows:
-                        t = ui.table(columns=cols, rows=rows, row_key='id').classes('w-full border-none shadow-none')
-                        t.add_slot('body-cell-status', '''<q-td :props="props"><q-badge :color="props.row.status === 'Paid' ? 'emerald-500' : (props.row.status === 'Sent' ? 'indigo-500' : (props.row.status === 'Cancelled' ? 'red-500' : 'amber-500'))" :style="{padding:'4px 12px',borderRadius:'999px',fontWeight:'700',fontSize:'10px'}">{{ props.row.status }}</q-badge></q-td>''')
-                    else:
-                        with ui.column().classes('w-full items-center justify-center p-10'):
-                            ui.icon('search_off', size='40px', color='slate-300')
-                            ui.label('No invoices in this period').classes('text-slate-400 text-sm mt-2')
+                        'cust':      name,
+                        'count':     data['count'],
+                        'sub_fmt':   f'${data["subtotal"]:,.2f}',
+                        'tax_fmt':   f'${data["taxes"]:,.2f}',
+                        'total_fmt': f'${data["total"]:,.2f}',
+                    } for name, data in sorted_custs]
+                    tbl = ui.table(columns=cols, rows=rows, row_key='cust').classes('w-full border-none shadow-none')
+                    tbl.add_slot('body-cell-total', '''<q-td :props="props"><span class="font-bold text-indigo-600">{{ props.row.total_fmt }}</span></q-td>''')
 
-            # ── TAX REPORT ──
-            with ui.column().classes('w-full gap-4 mt-6'):
-                with ui.row().classes('items-center gap-3'):
-                    ui.icon('account_balance', color='emerald-600', size='24px')
-                    ui.label('Tax Report').classes('text-2xl font-bold text-slate-800 dark:text-slate-200')
-                ui.label('Based on paid invoices only').classes('text-xs text-slate-400 -mt-2')
+                with ui.column().classes('w-72 shrink-0'):
+                    labels = [name for name, _ in sorted_custs]
+                    values = [data['total'] for _, data in sorted_custs]
+                    fig = go.Figure(go.Pie(
+                        labels=labels, values=values,
+                        hole=0.55,
+                        marker_colors=['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'],
+                        textinfo='percent',
+                        hovertemplate='%{label}: $%{value:,.2f}<extra></extra>',
+                    ))
+                    fig.update_layout(
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        showlegend=True,
+                        legend=dict(font=dict(size=11)),
+                        height=240,
+                    )
+                    ui.plotly(fig).classes('w-full')
 
-                with ui.row().classes('w-full gap-4'):
-                    for label, val, sub, color in [
-                        ('TPS Collected',   tps_collected,  f'5% on ${paid_subtotal:,.2f}',    'blue-600'),
-                        ('TVQ Collected',   tvq_collected,  f'9.975% on ${paid_subtotal:,.2f}', 'purple-600'),
-                        ('Total Taxes Due', tps_collected + tvq_collected, 'TPS + TVQ',         'emerald-600'),
-                        ('Taxable Revenue', paid_subtotal,  f'{len(paid_invs)} paid invoices',  'indigo-600'),
-                    ]:
-                        with ui.card().classes('flex-1 p-6 premium-card'):
-                            ui.label(label).classes('text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2')
-                            ui.label(f'${val:,.2f}').classes('text-3xl font-black text-slate-900 dark:text-slate-100')
-                            ui.label(sub).classes('text-xs text-slate-400 mt-1')
+    def render_aged_receivables(container, invoices):
+        container.clear()
+        unpaid = [i for i in invoices if i.status in ('Sent', 'Overdue')]
 
-                with ui.card().classes('w-full p-0 premium-card overflow-hidden'):
-                    tax_cols = [
-                        {'name': 'num',      'label': '#',            'field': 'number',   'align': 'left'},
-                        {'name': 'cust',     'label': 'Client',       'field': 'cname',    'align': 'left'},
-                        {'name': 'date',     'label': 'Date',         'field': 'date_fmt', 'align': 'left'},
-                        {'name': 'subtotal', 'label': 'Subtotal',     'field': 'sub_fmt',  'align': 'right'},
-                        {'name': 'tps',      'label': 'TPS (5%)',     'field': 'tps_fmt',  'align': 'right'},
-                        {'name': 'tvq',      'label': 'TVQ (9.975%)', 'field': 'tvq_fmt',  'align': 'right'},
-                        {'name': 'total',    'label': 'Total',        'field': 'total_fmt','align': 'right'},
-                    ]
-                    tax_rows = [{
-                        **i.model_dump(),
-                        'cname':     cust_map.get(i.customer_id, '?'),
-                        'date_fmt':  i.date.strftime('%Y-%m-%d'),
-                        'sub_fmt':   f'${i.subtotal:,.2f}',
-                        'tps_fmt':   f'${i.subtotal * TPS_RATE:,.2f}',
-                        'tvq_fmt':   f'${i.subtotal * TVQ_RATE:,.2f}',
-                        'total_fmt': f'${i.total:,.2f}',
-                    } for i in paid_invs]
-                    if tax_rows:
-                        ui.table(columns=tax_cols, rows=tax_rows, row_key='id').classes('w-full border-none shadow-none')
-                    else:
-                        with ui.column().classes('w-full items-center justify-center p-10'):
-                            ui.icon('receipt_long', size='40px', color='slate-300')
-                            ui.label('No paid invoices in this period').classes('text-slate-400 text-sm mt-2')
+        buckets = {'Current (0\u201330d)': [], '31\u201360d': [], '61\u201390d': [], '90d+': []}
+        for inv in unpaid:
+            ref_date = inv.due_date or inv.date
+            age = (today - ref_date).days
+            if age <= 30:
+                buckets['Current (0\u201330d)'].append(inv)
+            elif age <= 60:
+                buckets['31\u201360d'].append(inv)
+            elif age <= 90:
+                buckets['61\u201390d'].append(inv)
+            else:
+                buckets['90d+'].append(inv)
 
+        bucket_colors = {
+            'Current (0\u201330d)': 'emerald-600',
+            '31\u201360d':          'amber-500',
+            '61\u201390d':          'orange-500',
+            '90d+':            'red-600',
+        }
+
+        with container:
+            with ui.row().classes('w-full gap-4 mb-4'):
+                for bucket, invs in buckets.items():
+                    total = sum(i.total for i in invs)
+                    color = bucket_colors[bucket]
+                    with ui.card().classes('flex-1 p-4 bg-slate-50 dark:bg-slate-800 rounded-xl'):
+                        ui.label(bucket).classes(f'text-[10px] font-black text-{color} uppercase tracking-widest mb-1')
+                        ui.label(f'${total:,.2f}').classes('text-xl font-black text-slate-900 dark:text-slate-100')
+                        ui.label(f'{len(invs)} invoice{"s" if len(invs) != 1 else ""}').classes('text-xs text-slate-400')
+
+            if not unpaid:
+                with ui.column().classes('w-full items-center p-8'):
+                    ui.icon('check_circle', size='40px', color='emerald-400')
+                    ui.label('No outstanding invoices').classes('text-slate-400 text-sm mt-2')
+                return
+
+            all_rows = []
+            for bucket, invs in buckets.items():
+                for inv in invs:
+                    ref_date = inv.due_date or inv.date
+                    age = (today - ref_date).days
+                    all_rows.append({
+                        **inv.model_dump(),
+                        'cname':     cust_map.get(inv.customer_id, '?'),
+                        'date_fmt':  inv.date.strftime('%Y-%m-%d'),
+                        'due_fmt':   inv.due_date.strftime('%Y-%m-%d') if inv.due_date else '\u2014',
+                        'age_days':  age,
+                        'bucket':    bucket,
+                        'total_fmt': f'${inv.total:,.2f}',
+                    })
+
+            cols = [
+                {'name': 'num',    'label': '#',           'field': 'number',   'align': 'left'},
+                {'name': 'cust',   'label': 'Client',      'field': 'cname',    'align': 'left'},
+                {'name': 'date',   'label': 'Invoice Date','field': 'date_fmt', 'align': 'left'},
+                {'name': 'due',    'label': 'Due Date',    'field': 'due_fmt',  'align': 'left'},
+                {'name': 'age',    'label': 'Days Old',    'field': 'age_days', 'align': 'center'},
+                {'name': 'bucket', 'label': 'Bucket',      'field': 'bucket',   'align': 'center'},
+                {'name': 'total',  'label': 'Total Due',   'field': 'total_fmt','align': 'right'},
+            ]
+            tbl = ui.table(columns=cols, rows=all_rows, row_key='id').classes('w-full border-none shadow-none')
+            tbl.add_slot('body-cell-bucket', '''
+                <q-td :props="props">
+                  <q-badge
+                    :color="props.row.bucket === 'Current (0\u201330d)' ? 'green' : (props.row.bucket === '31\u201360d' ? 'amber' : (props.row.bucket === '61\u201390d' ? 'orange' : 'red'))"
+                    :style="{padding:'3px 10px',borderRadius:'999px',fontWeight:'700',fontSize:'10px'}">
+                    {{ props.row.bucket }}
+                  </q-badge>
+                </q-td>''')
+
+    # ── Page layout ──
     def apply_filter():
         d_from = state['from']
         d_to   = state['to'].replace(hour=23, minute=59, second=59)
         filtered = [i for i in all_invoices if d_from <= i.date <= d_to]
-        render_reports(content_area, filtered)
+        render_sales_summary(sales_content, filtered)
+        render_revenue_trend(trend_content, filtered)
+        render_tax_report(tax_content, filtered)
+        render_income_by_customer(cust_content, filtered)
+        render_aged_receivables(aged_content, all_invoices)
 
-    # ── Page layout ──
     with ui.column().classes('w-full p-8 max-w-7xl mx-auto animate-fade-in'):
         ui.label('Reports').classes('text-4xl font-extrabold text-slate-900 dark:text-slate-100 mb-2')
-        ui.label('Sales & tax summaries for any period').classes('text-slate-400 text-base mb-8')
+        ui.label('Financial reports for any period').classes('text-slate-400 text-base mb-6')
+
+        preset_btns = {}
 
         with ui.card().classes('w-full p-6 premium-card mb-6'):
-            preset_btns = {}
-
             def set_preset(name):
                 state['preset'] = name
                 for n, btn in preset_btns.items():
-                    if n == name:
-                        btn.classes(replace='btn-primary h-9 rounded-lg px-4 text-sm')
-                    else:
-                        btn.classes(replace='h-9 rounded-lg px-4 text-sm bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300')
+                    btn.classes(replace='btn-primary h-9 rounded-lg px-4 text-sm' if n == name
+                                else 'h-9 rounded-lg px-4 text-sm bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300')
                 if name != 'Custom':
                     d_from, d_to = PRESETS[name]
                     state['from'] = d_from
@@ -755,7 +935,17 @@ def reports_page():
                         ui.notify('Invalid date format. Use YYYY-MM-DD', color='red-500')
                 ui.button('Apply', on_click=apply_custom).classes('btn-primary h-9 rounded-lg px-5 text-sm')
 
-        content_area = ui.column().classes('w-full gap-6')
+        section_header('Income')
+        sales_content = report_card('receipt_long',    'Sales Summary',              'Total invoiced, collected, and outstanding for the period')
+        trend_content = report_card('bar_chart',       'Monthly Revenue Trend',      'Paid revenue per month \u2014 bar chart', color='emerald-600')
+
+        section_header('Taxes')
+        tax_content   = report_card('account_balance', 'Sales Tax Report (TPS/TVQ)', 'TPS & TVQ collected on paid invoices', color='blue-600')
+
+        section_header('Customers')
+        cust_content  = report_card('group',           'Income by Customer',         'Revenue breakdown per client', color='purple-600')
+        aged_content  = report_card('hourglass_top',   'Aged Receivables',           'Unpaid invoices grouped by age (30/60/90 days)', color='amber-600')
+
         apply_filter()
 
 
