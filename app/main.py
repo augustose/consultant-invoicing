@@ -913,17 +913,22 @@ def reports_page():
                     state['from'] = d_from
                     state['to']   = d_to
                     custom_row.set_visibility(False)
+                    date_range_label.set_text(f"{d_from.strftime('%b %d, %Y')} — {d_to.strftime('%b %d, %Y')}")
                     apply_filter()
                 else:
                     custom_row.set_visibility(True)
 
-            with ui.row().classes('items-center gap-3 flex-wrap'):
-                ui.label('Period:').classes('text-sm font-semibold text-slate-500 mr-2')
-                for name in PRESETS:
-                    is_active = name == state['preset']
-                    cls = 'btn-primary h-9 rounded-lg px-4 text-sm' if is_active else 'h-9 rounded-lg px-4 text-sm bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
-                    btn = ui.button(name, on_click=lambda n=name: set_preset(n)).classes(cls)
-                    preset_btns[name] = btn
+            with ui.row().classes('w-full items-center justify-between flex-wrap gap-3'):
+                with ui.row().classes('items-center gap-3 flex-wrap'):
+                    ui.label('Period:').classes('text-sm font-semibold text-slate-500 mr-2')
+                    for name in PRESETS:
+                        is_active = name == state['preset']
+                        cls = 'btn-primary h-9 rounded-lg px-4 text-sm' if is_active else 'h-9 rounded-lg px-4 text-sm bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+                        btn = ui.button(name, on_click=lambda n=name: set_preset(n)).classes(cls)
+                        preset_btns[name] = btn
+                date_range_label = ui.label(
+                    f"{state['from'].strftime('%b %d, %Y')} — {state['to'].strftime('%b %d, %Y')}"
+                ).classes('text-sm text-slate-400 font-medium')
 
             with ui.row().classes('items-center gap-4 mt-3') as custom_row:
                 custom_row.set_visibility(False)
@@ -933,6 +938,7 @@ def reports_page():
                     try:
                         state['from'] = datetime.strptime(from_input.value, '%Y-%m-%d')
                         state['to']   = datetime.strptime(to_input.value,   '%Y-%m-%d')
+                        date_range_label.set_text(f"{state['from'].strftime('%b %d, %Y')} — {state['to'].strftime('%b %d, %Y')}")
                         apply_filter()
                     except ValueError:
                         ui.notify('Invalid date format. Use YYYY-MM-DD', color='red-500')
