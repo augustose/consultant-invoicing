@@ -50,3 +50,7 @@ data/*
 !data/.gitkeep
 temp/
 /tmp/
+
+# Private / personal data — never commit
+app.md
+docs/invoiceMetadata.md

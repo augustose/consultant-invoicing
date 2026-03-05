@@ -1,0 +1,18 @@
+[project]
+name = "accounting-ai"
+version = "0.1.0"
+description = "Premium Accounting & Invoicing System for Independent Consultants"
+dependencies = [
+    "nicegui",
+    "sqlmodel",
+    "loguru",
+    "pandas",
+    "python-dotenv",
+    "plotly",
+    "jinja2"
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest",
+]
