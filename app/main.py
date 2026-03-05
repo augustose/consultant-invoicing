@@ -474,6 +474,7 @@ def expenses_page():
                         s.add(exp); s.commit()
 
                     ui.notify('Expense saved!', color='emerald-500')
+                    date_input.value = today.strftime('%Y-%m-%d')
                     desc_input.value = ''
                     amount_input.value = 0.0
                     tps_check.value = False
@@ -835,6 +836,12 @@ def reports_page():
         }
 
         with container:
+            if not unpaid:
+                with ui.column().classes('w-full items-center p-8'):
+                    ui.icon('check_circle', size='40px', color='emerald-400')
+                    ui.label('No outstanding invoices').classes('text-slate-400 text-sm mt-2')
+                return
+
             with ui.row().classes('w-full gap-4 mb-4'):
                 for bucket, invs in buckets.items():
                     total = sum(i.total for i in invs)
@@ -843,12 +850,6 @@ def reports_page():
                         ui.label(bucket).classes(f'text-[10px] font-black text-{color} uppercase tracking-widest mb-1')
                         ui.label(f'${total:,.2f}').classes('text-xl font-black text-slate-900 dark:text-slate-100')
                         ui.label(f'{len(invs)} invoice{"s" if len(invs) != 1 else ""}').classes('text-xs text-slate-400')
-
-            if not unpaid:
-                with ui.column().classes('w-full items-center p-8'):
-                    ui.icon('check_circle', size='40px', color='emerald-400')
-                    ui.label('No outstanding invoices').classes('text-slate-400 text-sm mt-2')
-                return
 
             all_rows = []
             for bucket, invs in buckets.items():
