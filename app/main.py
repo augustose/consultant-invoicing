@@ -15,7 +15,7 @@ TRANSLATIONS = {
     'en': {
         'dashboard': 'Dashboard', 'invoices': 'Invoices', 'recurring': 'Subscription',
         'customers': 'Customers', 'services': 'Services', 'accounts': 'Accounts',
-        'reports': 'Reports', 'settings': 'Settings', 'welcome': 'Welcome back, Consultant',
+        'reports': 'Reports', 'expenses': 'Expenses', 'settings': 'Settings', 'welcome': 'Welcome back, Consultant',
         'overdue': 'OVERDUE', 'draft': 'DRAFT / PENDING', 'paid': 'PAID (TOTAL)',
         'new_invoice': 'New Invoice', 'add_customer': 'Add Customer', 'add_service': 'Add Service',
         'mark_paid': 'Mark as Paid', 'download_pdf': 'Download PDF', 'preview': 'Preview',
@@ -28,7 +28,7 @@ TRANSLATIONS = {
     'es': {
         'dashboard': 'Tablero', 'invoices': 'Facturas', 'recurring': 'Suscripciones',
         'customers': 'Clientes', 'services': 'Servicios', 'accounts': 'Cuentas',
-        'reports': 'Reportes', 'settings': 'Configuración', 'welcome': 'Bienvenido de nuevo, Consultor',
+        'reports': 'Reportes', 'expenses': 'Gastos', 'settings': 'Configuración', 'welcome': 'Bienvenido de nuevo, Consultor',
         'overdue': 'VENCIDO', 'draft': 'BORRADOR / PENDIENTE', 'paid': 'PAGADO (TOTAL)',
         'new_invoice': 'Nueva Factura', 'add_customer': 'Agregar Cliente', 'add_service': 'Agregar Servicio',
         'mark_paid': 'Marcar como Pagado', 'download_pdf': 'Descargar PDF', 'preview': 'Vista Previa',
@@ -80,6 +80,7 @@ def create_menu(active_path='/'):
                     ('/customers', 'group', 'Customers'),
                     ('/services', 'inventory_2', 'Services'),
                     ('/accounts', 'account_balance_wallet', 'Accounts'),
+                    ('/expenses', 'payments', 'Expenses'),
                     ('/reports', 'bar_chart', 'Reports'),
                     ('/settings', 'settings', 'Settings'),
                 ]
@@ -373,6 +374,199 @@ def dashboard_page():
                     ]
                     t = ui.table(columns=cols, rows=rows, row_key='id').classes('w-full border-none shadow-none')
                     t.add_slot('body-cell-status', '''<q-td :props="props"><q-badge :color="props.row.status === 'Paid' ? 'emerald-500' : (props.row.status === 'Sent' ? 'indigo-500' : (props.row.status === 'Cancelled' ? 'red-500' : 'amber-500'))" :style="{padding:'4px 12px',borderRadius:'999px',fontWeight:'700',fontSize:'10px'}">{{ props.row.status }}</q-badge></q-td>''')
+
+@ui.page('/expenses')
+def expenses_page():
+    inject_premium_styles(); create_menu('/expenses')
+
+    TPS_RATE = 0.05
+    TVQ_RATE = 0.09975
+
+    today = datetime.today()
+    first_this_month = today.replace(day=1)
+    first_this_year  = today.replace(month=1, day=1)
+
+    PRESETS = {
+        'This Month': (first_this_month, today),
+        'This Year':  (first_this_year,  today),
+        'All Time':   (datetime(2000, 1, 1), today),
+    }
+
+    state = {'preset': 'This Month', 'from': first_this_month, 'to': today}
+
+    with Session(engine) as s:
+        expense_accounts = s.exec(
+            select(Account).where(Account.type == AccountType.EXPENSE, Account.is_active == True)
+            .order_by(Account.code)
+        ).all()
+
+    account_options = {acc.id: f"{acc.code} — {acc.name}" for acc in expense_accounts}
+
+    form = {
+        'date': today.strftime('%Y-%m-%d'),
+        'description': '',
+        'amount': 0.0,
+        'apply_tps': False,
+        'apply_tvq': False,
+        'account_id': expense_accounts[0].id if expense_accounts else None,
+        'notes': '',
+    }
+
+    def compute_total(amount, apply_tps, apply_tvq):
+        tps = round(amount * TPS_RATE, 2) if apply_tps else 0.0
+        tvq = round(amount * TVQ_RATE, 2) if apply_tvq else 0.0
+        return tps, tvq, round(amount + tps + tvq, 2)
+
+    with ui.column().classes('w-full p-8 max-w-7xl mx-auto animate-fade-in'):
+        ui.label('Expenses').classes('text-4xl font-extrabold text-slate-900 dark:text-slate-100 mb-2')
+        ui.label('Track business expenses linked to your chart of accounts').classes('text-slate-400 text-base mb-8')
+
+        # ── Add Expense Form ──
+        with ui.card().classes('w-full p-6 premium-card mb-6'):
+            ui.label('Add Expense').classes('text-sm font-black text-slate-400 uppercase tracking-widest mb-4')
+
+            with ui.row().classes('w-full gap-4 flex-wrap'):
+                date_input = ui.input('Date', value=form['date']).props('dense outlined').classes('w-40')
+                desc_input = ui.input('Description').props('dense outlined').classes('flex-1 min-w-48')
+                acct_select = ui.select(account_options, value=form['account_id'], label='Account').props('dense outlined').classes('w-72')
+
+            with ui.row().classes('w-full items-center gap-4 mt-3 flex-wrap'):
+                amount_input = ui.number('Amount (pre-tax)', value=0.0, format='%.2f').props('dense outlined prefix=$').classes('w-44')
+                tps_check = ui.checkbox('TPS (5%)', value=False)
+                tvq_check = ui.checkbox('TVQ (9.975%)', value=False)
+                total_label = ui.label('Total: $0.00').classes('text-lg font-bold text-indigo-600 ml-4')
+
+            def update_total():
+                tps, tvq, total = compute_total(amount_input.value or 0, tps_check.value, tvq_check.value)
+                total_label.set_text(f'Total: ${total:,.2f}')
+
+            amount_input.on_value_change(lambda _: update_total())
+            tps_check.on_value_change(lambda _: update_total())
+            tvq_check.on_value_change(lambda _: update_total())
+
+            with ui.row().classes('w-full gap-4 mt-3'):
+                notes_input = ui.input('Notes (optional)').props('dense outlined').classes('flex-1')
+
+                def save_expense():
+                    if not desc_input.value.strip():
+                        ui.notify('Description is required', color='red-500'); return
+                    if not acct_select.value:
+                        ui.notify('Select an account', color='red-500'); return
+                    try:
+                        exp_date = datetime.strptime(date_input.value, '%Y-%m-%d')
+                    except ValueError:
+                        ui.notify('Invalid date format. Use YYYY-MM-DD', color='red-500'); return
+
+                    amt = float(amount_input.value or 0)
+                    tps, tvq, total = compute_total(amt, tps_check.value, tvq_check.value)
+
+                    with Session(engine) as s:
+                        exp = Expense(
+                            date=exp_date,
+                            description=desc_input.value.strip(),
+                            amount=amt,
+                            tps=tps,
+                            tvq=tvq,
+                            total=total,
+                            account_id=acct_select.value,
+                            notes=notes_input.value.strip() or None,
+                        )
+                        s.add(exp); s.commit()
+
+                    ui.notify('Expense saved!', color='emerald-500')
+                    desc_input.value = ''
+                    amount_input.value = 0.0
+                    tps_check.value = False
+                    tvq_check.value = False
+                    notes_input.value = ''
+                    update_total()
+                    refresh_table()
+
+                ui.button('Add Expense', icon='add', on_click=save_expense).classes('btn-primary h-10 px-6')
+
+        # ── Period Filter ──
+        filter_state = {'from': first_this_month, 'to': today}
+        preset_btns = {}
+
+        def set_expense_preset(name):
+            for n, btn in preset_btns.items():
+                btn.classes(replace='btn-primary h-9 rounded-lg px-4 text-sm' if n == name
+                            else 'h-9 rounded-lg px-4 text-sm bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300')
+            d_from, d_to = PRESETS[name]
+            filter_state['from'] = d_from
+            filter_state['to'] = d_to
+            refresh_table()
+
+        with ui.card().classes('w-full p-4 premium-card mb-4'):
+            with ui.row().classes('items-center gap-3 flex-wrap'):
+                ui.label('Period:').classes('text-sm font-semibold text-slate-500 mr-2')
+                for name in PRESETS:
+                    is_active = name == 'This Month'
+                    cls = 'btn-primary h-9 rounded-lg px-4 text-sm' if is_active else 'h-9 rounded-lg px-4 text-sm bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+                    btn = ui.button(name, on_click=lambda n=name: set_expense_preset(n)).classes(cls)
+                    preset_btns[name] = btn
+
+        # ── Expenses Table ──
+        table_container = ui.column().classes('w-full')
+
+        acc_name_map = {acc.id: f"{acc.code} — {acc.name}" for acc in expense_accounts}
+
+        def refresh_table():
+            table_container.clear()
+            d_from = filter_state['from']
+            d_to   = filter_state['to'].replace(hour=23, minute=59, second=59)
+            with Session(engine) as s:
+                expenses = s.exec(
+                    select(Expense).where(Expense.date >= d_from, Expense.date <= d_to)
+                    .order_by(Expense.date.desc())
+                ).all()
+
+            with table_container:
+                if not expenses:
+                    with ui.card().classes('w-full p-10 premium-card items-center justify-center'):
+                        ui.icon('receipt_long', size='40px', color='slate-300')
+                        ui.label('No expenses in this period').classes('text-slate-400 text-sm mt-2')
+                    return
+
+                cols = [
+                    {'name': 'date',    'label': 'Date',        'field': 'date_fmt',   'align': 'left'},
+                    {'name': 'desc',    'label': 'Description', 'field': 'description','align': 'left'},
+                    {'name': 'account', 'label': 'Account',     'field': 'acct_name',  'align': 'left'},
+                    {'name': 'amount',  'label': 'Subtotal',    'field': 'amount_fmt', 'align': 'right'},
+                    {'name': 'tps',     'label': 'TPS',         'field': 'tps_fmt',    'align': 'right'},
+                    {'name': 'tvq',     'label': 'TVQ',         'field': 'tvq_fmt',    'align': 'right'},
+                    {'name': 'total',   'label': 'Total',       'field': 'total_fmt',  'align': 'right'},
+                ]
+                rows = [{
+                    **exp.model_dump(),
+                    'date_fmt':   exp.date.strftime('%Y-%m-%d'),
+                    'acct_name':  acc_name_map.get(exp.account_id, '?'),
+                    'amount_fmt': f'${exp.amount:,.2f}',
+                    'tps_fmt':    f'${exp.tps:,.2f}',
+                    'tvq_fmt':    f'${exp.tvq:,.2f}',
+                    'total_fmt':  f'${exp.total:,.2f}',
+                } for exp in expenses]
+
+                with ui.card().classes('w-full p-0 premium-card overflow-hidden'):
+                    tbl = ui.table(columns=cols, rows=rows, row_key='id').classes('w-full border-none shadow-none')
+                    tbl.add_slot('body-cell-total', '''<q-td :props="props"><span class="font-bold text-indigo-600">{{ props.row.total_fmt }}</span></q-td>''')
+
+                # Summary row
+                tot_amount = sum(e.amount for e in expenses)
+                tot_tps    = sum(e.tps    for e in expenses)
+                tot_tvq    = sum(e.tvq    for e in expenses)
+                tot_total  = sum(e.total  for e in expenses)
+                with ui.card().classes('w-full px-6 py-4 premium-card mt-2'):
+                    with ui.row().classes('w-full justify-end gap-8 items-center'):
+                        for label, val in [('Subtotal', tot_amount), ('TPS', tot_tps), ('TVQ', tot_tvq)]:
+                            with ui.column().classes('items-end'):
+                                ui.label(label).classes('text-[10px] font-black text-slate-400 uppercase tracking-widest')
+                                ui.label(f'${val:,.2f}').classes('text-sm font-semibold text-slate-600')
+                        with ui.column().classes('items-end'):
+                            ui.label('Grand Total').classes('text-[10px] font-black text-slate-400 uppercase tracking-widest')
+                            ui.label(f'${tot_total:,.2f}').classes('text-xl font-black text-indigo-600')
+
+        refresh_table()
 
 @ui.page('/reports')
 def reports_page():
