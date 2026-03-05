@@ -50,6 +50,9 @@ data/*
 !data/.gitkeep
 temp/
 /tmp/
+backups/
+examples/
+.claude/
 
 # Private / personal data — never commit
 app.md

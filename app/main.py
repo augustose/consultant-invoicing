@@ -7,13 +7,15 @@ from template_utils import TemplateManager
 import log_config  # noqa: F401 — initializes logging on import
 from loguru import logger
 import os, json, csv
+import plotly.graph_objects as go
+from collections import defaultdict
 
 # --- i18n System ---
 TRANSLATIONS = {
     'en': {
         'dashboard': 'Dashboard', 'invoices': 'Invoices', 'recurring': 'Subscription',
         'customers': 'Customers', 'services': 'Services', 'accounts': 'Accounts',
-        'settings': 'Settings', 'welcome': 'Welcome back, Consultant',
+        'reports': 'Reports', 'settings': 'Settings', 'welcome': 'Welcome back, Consultant',
         'overdue': 'OVERDUE', 'draft': 'DRAFT / PENDING', 'paid': 'PAID (TOTAL)',
         'new_invoice': 'New Invoice', 'add_customer': 'Add Customer', 'add_service': 'Add Service',
         'mark_paid': 'Mark as Paid', 'download_pdf': 'Download PDF', 'preview': 'Preview',
@@ -26,7 +28,7 @@ TRANSLATIONS = {
     'es': {
         'dashboard': 'Tablero', 'invoices': 'Facturas', 'recurring': 'Suscripciones',
         'customers': 'Clientes', 'services': 'Servicios', 'accounts': 'Cuentas',
-        'settings': 'Configuración', 'welcome': 'Bienvenido de nuevo, Consultor',
+        'reports': 'Reportes', 'settings': 'Configuración', 'welcome': 'Bienvenido de nuevo, Consultor',
         'overdue': 'VENCIDO', 'draft': 'BORRADOR / PENDIENTE', 'paid': 'PAGADO (TOTAL)',
         'new_invoice': 'Nueva Factura', 'add_customer': 'Agregar Cliente', 'add_service': 'Agregar Servicio',
         'mark_paid': 'Marcar como Pagado', 'download_pdf': 'Descargar PDF', 'preview': 'Vista Previa',
@@ -78,6 +80,7 @@ def create_menu(active_path='/'):
                     ('/customers', 'group', 'Customers'),
                     ('/services', 'inventory_2', 'Services'),
                     ('/accounts', 'account_balance_wallet', 'Accounts'),
+                    ('/reports', 'bar_chart', 'Reports'),
                     ('/settings', 'settings', 'Settings'),
                 ]
                 for path, icon, key in pages:
@@ -161,21 +164,28 @@ def open_invoice_preview(inv_id):
     d.open()
 
 # --- Logic Actions ---
-def mark_invoice_as_paid_action(iid):
-    logger.info(f"Marcar factura ID={iid} como pagada")
+def _update_invoice_status(iid, new_status: str, msg: str, color: str):
     try:
         with Session(engine) as s:
             inv = s.get(Invoice, iid)
             if inv:
-                inv.status = 'Paid'; s.add(inv); s.commit()
-                logger.info(f"Factura #{inv.number} marcada como pagada exitosamente")
-                ui.notify('Payment registered!', color='emerald-500'); ui.navigate.to('/invoices')
+                inv.status = new_status; s.add(inv); s.commit()
+                logger.info(f"Invoice #{inv.number} → {new_status}")
+                ui.notify(msg, color=color); ui.navigate.to('/invoices')
             else:
-                logger.warning(f"Factura ID={iid} no encontrada para marcar como pagada")
-                ui.notify('Factura no encontrada', color='red-500')
+                ui.notify('Invoice not found', color='red-500')
     except Exception as e:
-        logger.exception(f"Error al marcar factura ID={iid} como pagada")
+        logger.exception(f"Error updating invoice ID={iid} to {new_status}")
         ui.notify(f'Error: {e}', color='red-500')
+
+def mark_invoice_as_sent_action(iid):
+    _update_invoice_status(iid, 'Sent', 'Invoice marked as Sent.', 'indigo-500')
+
+def mark_invoice_as_paid_action(iid):
+    _update_invoice_status(iid, 'Paid', 'Payment registered!', 'emerald-500')
+
+def mark_invoice_as_cancelled_action(iid):
+    _update_invoice_status(iid, 'Cancelled', 'Invoice cancelled.', 'red-500')
 
 # --- Pages ---
 @ui.page('/invoices')
@@ -257,57 +267,646 @@ def invoices_page():
             cols = [{'name':'num','label':'#','field':'number','align':'left'},{'name':'cust','label':_('customers'),'field':'cname','align':'left'},{'name':'status','label':'Status','field':'status','align':'center'},{'name':'total','label':'Total','field':'total_fmt','align':'right'},{'name':'actions','label':'','field':'id','align':'right'}]
             rows = [{**i.model_dump(), 'cname': next((c.name for c in customers if c.id == i.customer_id), '?'), 'total_fmt': f'${i.total:,.2f}'} for i in invoices]
             table = ui.table(columns=cols, rows=rows, row_key='id').classes('w-full border-none shadow-none')
-            table.add_slot('body-cell-status', '''<q-td :props="props"><q-badge :color="props.row.status == 'Paid' ? 'emerald-500' : (props.row.status == 'Overdue' ? 'red-500' : 'slate-400')" :style="{padding:'8px 16px',borderRadius:'100px',fontWeight:'700',fontSize:'10px'}">{{ props.row.status }}</q-badge></q-td>''')
-            table.add_slot('body-cell-actions', '''<q-td :props="props"><q-btn flat round icon="visibility" @click="$parent.$emit('preview', props.row.id)" /><q-btn flat round color="indigo-600" icon="print" @click="$parent.$emit('print', props.row.id)" /><q-btn v-if="props.row.status !== 'Paid'" flat round color="emerald-500" icon="check" @click="$parent.$emit('paid', props.row.id)" /></q-td>''')
-            table.on('preview', lambda e: open_invoice_preview(e.args)); table.on('paid', lambda e: mark_invoice_as_paid_action(e.args)); table.on('print', lambda e: ui.run_javascript(f'window.open("/preview/{e.args}", "_blank")'))
+            table.add_slot('body-cell-status', '''<q-td :props="props"><q-badge :color="props.row.status === 'Paid' ? 'emerald-500' : (props.row.status === 'Sent' ? 'indigo-500' : (props.row.status === 'Cancelled' ? 'red-500' : 'amber-500'))" :style="{padding:'8px 16px',borderRadius:'100px',fontWeight:'700',fontSize:'10px'}">{{ props.row.status }}</q-badge></q-td>''')
+            table.add_slot('body-cell-actions', '''<q-td :props="props"><q-btn flat round icon="visibility" @click="$parent.$emit('preview', props.row.id)" /><q-btn flat round color="indigo-600" icon="print" @click="$parent.$emit('print', props.row.id)" /><q-btn v-if="props.row.status === 'Draft'" flat round color="indigo-400" icon="send" title="Mark as Sent" @click="$parent.$emit('sent', props.row.id)" /><q-btn v-if="props.row.status === 'Sent'" flat round color="emerald-500" icon="check" title="Mark as Paid" @click="$parent.$emit('paid', props.row.id)" /><q-btn v-if="props.row.status !== 'Paid' && props.row.status !== 'Cancelled'" flat round color="red-300" icon="cancel" title="Cancel invoice" @click="$parent.$emit('cancel', props.row.id)" /></q-td>''')
+            table.on('preview', lambda e: open_invoice_preview(e.args)); table.on('sent', lambda e: mark_invoice_as_sent_action(e.args)); table.on('paid', lambda e: mark_invoice_as_paid_action(e.args)); table.on('cancel', lambda e: mark_invoice_as_cancelled_action(e.args)); table.on('print', lambda e: ui.run_javascript(f'window.open("/preview/{e.args}", "_blank")'))
 
 @ui.page('/')
 def dashboard_page():
     logger.debug("Cargando página: / (dashboard)")
     inject_premium_styles(); create_menu('/')
-    with Session(engine) as s: invs = s.exec(select(Invoice)).all()
+
+    with Session(engine) as s:
+        invs = s.exec(select(Invoice).order_by(Invoice.date.desc())).all()
+        customers = s.exec(select(Customer)).all()
+
+    cust_map = {c.id: c.name for c in customers}
+
+    paid   = [i for i in invs if i.status == 'Paid']
+    sent   = [i for i in invs if i.status == 'Sent']
+    drafts = [i for i in invs if i.status == 'Draft']
+
+    def stat_card(label, icon, color, border, amount, count):
+        with ui.card().classes(f'flex-1 p-8 premium-card {border}'):
+            with ui.row().classes('items-center gap-3 mb-4'):
+                ui.icon(icon, color=color, size='28px')
+                ui.label(label).classes('text-[10px] font-black text-slate-400 uppercase tracking-widest')
+            ui.label(f'${amount:,.2f}').classes('text-4xl font-black text-slate-900 dark:text-slate-100')
+            ui.label(f'{count} invoice{"s" if count != 1 else ""}').classes('text-xs text-slate-400 mt-1')
+
+    # Build monthly revenue chart (paid invoices, last 12 months)
+    monthly = defaultdict(float)
+    for i in paid:
+        key = i.date.strftime('%b %Y')
+        monthly[key] += i.total
+    # Sort chronologically
+    from datetime import date
+    months_sorted = sorted(monthly.keys(), key=lambda m: datetime.strptime(m, '%b %Y'))[-12:]
+    chart_labels = months_sorted
+    chart_values = [monthly[m] for m in months_sorted]
+
+    fig = go.Figure(go.Bar(
+        x=chart_labels,
+        y=chart_values,
+        marker_color='#3b82f6',
+        marker_line_width=0,
+    ))
+    fig.update_layout(
+        margin=dict(l=16, r=16, t=16, b=16),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        xaxis=dict(showgrid=False, tickfont=dict(size=10, color='#94a3b8')),
+        yaxis=dict(showgrid=True, gridcolor='#f1f5f9', tickprefix='$', tickfont=dict(size=10, color='#94a3b8')),
+        font=dict(family='Inter, system-ui, sans-serif'),
+        showlegend=False,
+    )
+
     with ui.column().classes('w-full p-8 max-w-7xl mx-auto animate-fade-in'):
-        ui.label(_('welcome')).classes('text-5xl font-extrabold text-slate-900 dark:text-slate-100 mb-2')
-        ui.label('Consultant AI - Real-time Insight').classes('text-slate-400 text-xl font-medium mb-16')
-        with ui.row().classes('w-full gap-8 mb-16'):
-            for label, border, icon, color, val in [(_('overdue'),'stat-overdue','error','red-500',sum(i.total for i in invs if i.status=='Overdue')),(_('draft'),'stat-pending','history_toggle_off','amber-500',sum(i.total for i in invs if i.status=='Draft')),(_('paid'),'stat-paid','auto_awesome','emerald-500',sum(i.total for i in invs if i.status=='Paid'))]:
-                with ui.card().classes(f'flex-1 p-10 premium-card {border} flex justify-center'):
-                    with ui.row().classes('items-center gap-4 w-full mb-6'): ui.icon(icon, color=color, size='32px'); ui.label(label).classes('text-[10px] font-black text-slate-400 uppercase tracking-widest')
-                    ui.label(f'${val:,.2f}').classes('text-5xl font-black text-slate-900 dark:text-slate-100')
-        with ui.row().classes('w-full gap-8'):
-            with ui.column().classes('flex-[2] gap-6'):
-                ui.label(_('recent_activity')).classes('text-2xl font-bold text-slate-800 dark:text-slate-200')
-                with ui.card().classes('w-full p-0 premium-card h-96 overflow-hidden'): ui.table(columns=[{'name':'n','field':'number','label':'#'},{'name':'t','field':'total','label':'Total'}], rows=[{'number':i.number,'total':f'${i.total:,.2f}'} for i in invs[:8]]).classes('w-full border-none shadow-none')
-            with ui.column().classes('flex-1 gap-6'):
-                ui.label(_('cashflow')).classes('text-2xl font-bold text-slate-800 dark:text-slate-200')
-                with ui.card().classes('w-full p-10 premium-card h-96 flex items-center justify-center bg-indigo-50 dark:bg-slate-800'): ui.icon('monitoring', size='64px', color='indigo-200'); ui.label('Analytics ready in Phase 5').classes('text-slate-400 mt-6 italic')
+        with ui.row().classes('w-full justify-between items-end mb-10'):
+            with ui.column():
+                ui.label(_('welcome')).classes('text-4xl font-extrabold text-slate-900 dark:text-slate-100')
+                ui.label('Real-time overview of your consulting business').classes('text-slate-400 text-base mt-1')
+            ui.button('New Invoice', icon='add_circle', on_click=lambda: ui.navigate.to('/invoices')).classes('btn-primary h-12 rounded-xl px-6')
+
+        # ── Stat cards ──
+        with ui.row().classes('w-full gap-6 mb-10'):
+            stat_card('Paid', 'auto_awesome', 'emerald-500', 'stat-paid', sum(i.total for i in paid), len(paid))
+            stat_card('Awaiting Payment', 'send', 'indigo-500', 'stat-overdue', sum(i.total for i in sent), len(sent))
+            stat_card('Draft', 'history_toggle_off', 'amber-500', 'stat-pending', sum(i.total for i in drafts), len(drafts))
+            with ui.card().classes('flex-1 p-8 premium-card'):
+                with ui.row().classes('items-center gap-3 mb-4'):
+                    ui.icon('people', color='slate-400', size='28px')
+                    ui.label('Clients').classes('text-[10px] font-black text-slate-400 uppercase tracking-widest')
+                ui.label(str(len(customers))).classes('text-4xl font-black text-slate-900 dark:text-slate-100')
+                ui.label('active clients').classes('text-xs text-slate-400 mt-1')
+
+        # ── Chart + Recent invoices ──
+        with ui.row().classes('w-full gap-6'):
+            with ui.column().classes('flex-1 gap-4'):
+                ui.label('Monthly Revenue').classes('text-xl font-bold text-slate-800 dark:text-slate-200')
+                with ui.card().classes('w-full p-4 premium-card'):
+                    if chart_values:
+                        ui.plotly(fig).classes('w-full h-64')
+                    else:
+                        with ui.column().classes('w-full h-64 items-center justify-center'):
+                            ui.icon('bar_chart', size='48px', color='indigo-200')
+                            ui.label('No paid invoices yet').classes('text-slate-400 text-sm mt-2')
+
+            with ui.column().classes('flex-[1.4] gap-4'):
+                ui.label('Recent Invoices').classes('text-xl font-bold text-slate-800 dark:text-slate-200')
+                with ui.card().classes('w-full p-0 premium-card overflow-hidden'):
+                    cols = [
+                        {'name': 'num',    'label': '#',       'field': 'number',  'align': 'left'},
+                        {'name': 'cust',   'label': 'Client',  'field': 'cname',   'align': 'left'},
+                        {'name': 'date',   'label': 'Date',    'field': 'date_fmt','align': 'left'},
+                        {'name': 'status', 'label': 'Status',  'field': 'status',  'align': 'center'},
+                        {'name': 'total',  'label': 'Total',   'field': 'total_fmt','align': 'right'},
+                    ]
+                    rows = [
+                        {
+                            **i.model_dump(),
+                            'cname':     cust_map.get(i.customer_id, '?'),
+                            'date_fmt':  i.date.strftime('%Y-%m-%d'),
+                            'total_fmt': f'${i.total:,.2f}',
+                        }
+                        for i in invs[:10]
+                    ]
+                    t = ui.table(columns=cols, rows=rows, row_key='id').classes('w-full border-none shadow-none')
+                    t.add_slot('body-cell-status', '''<q-td :props="props"><q-badge :color="props.row.status === 'Paid' ? 'emerald-500' : (props.row.status === 'Sent' ? 'indigo-500' : (props.row.status === 'Cancelled' ? 'red-500' : 'amber-500'))" :style="{padding:'4px 12px',borderRadius:'999px',fontWeight:'700',fontSize:'10px'}">{{ props.row.status }}</q-badge></q-td>''')
+
+@ui.page('/reports')
+def reports_page():
+    inject_premium_styles(); create_menu('/reports')
+
+    TPS_RATE = 0.05
+    TVQ_RATE = 0.09975
+
+    today = datetime.today()
+    first_this_month = today.replace(day=1)
+    first_this_year  = today.replace(month=1, day=1)
+    last_month_end   = first_this_month - timedelta(days=1)
+    last_month_start = last_month_end.replace(day=1)
+    last_year_start  = today.replace(year=today.year - 1, month=1, day=1)
+    last_year_end    = today.replace(year=today.year - 1, month=12, day=31)
+
+    PRESETS = {
+        'This Month': (first_this_month, today),
+        'Last Month': (last_month_start, last_month_end),
+        'This Year':  (first_this_year,  today),
+        'Last Year':  (last_year_start,  last_year_end),
+        'All Time':   (datetime(2000, 1, 1), today),
+        'Custom':     None,
+    }
+
+    state = {'preset': 'This Month', 'from': first_this_month, 'to': today}
+
+    with Session(engine) as s:
+        all_invoices  = s.exec(select(Invoice).order_by(Invoice.date.desc())).all()
+        all_customers = s.exec(select(Customer)).all()
+    cust_map = {c.id: c.name for c in all_customers}
+
+    # ── Render function (defined before any call) ──
+    def render_reports(container, invoices):
+        container.clear()
+        paid_invs = [i for i in invoices if i.status == 'Paid']
+        sent_invs = [i for i in invoices if i.status == 'Sent']
+        canc_invs = [i for i in invoices if i.status == 'Cancelled']
+
+        total_invoiced    = sum(i.total for i in invoices if i.status != 'Cancelled')
+        total_paid        = sum(i.total for i in paid_invs)
+        total_outstanding = sum(i.total for i in sent_invs)
+        paid_subtotal     = sum(i.subtotal for i in paid_invs)
+        tps_collected     = paid_subtotal * TPS_RATE
+        tvq_collected     = paid_subtotal * TVQ_RATE
+
+        with container:
+            # ── SALES REPORT ──
+            with ui.column().classes('w-full gap-4'):
+                with ui.row().classes('items-center gap-3'):
+                    ui.icon('receipt_long', color='indigo-600', size='24px')
+                    ui.label('Sales Report').classes('text-2xl font-bold text-slate-800 dark:text-slate-200')
+
+                with ui.row().classes('w-full gap-4'):
+                    for label, val, color, icon in [
+                        ('Total Invoiced', total_invoiced,    'indigo-600',  'calculate'),
+                        ('Collected',      total_paid,        'emerald-600', 'check_circle'),
+                        ('Outstanding',    total_outstanding, 'amber-600',   'hourglass_top'),
+                        ('Cancelled',      sum(i.total for i in canc_invs), 'red-400', 'cancel'),
+                    ]:
+                        with ui.card().classes('flex-1 p-6 premium-card'):
+                            with ui.row().classes('items-center gap-2 mb-2'):
+                                ui.icon(icon, color=color, size='18px')
+                                ui.label(label).classes('text-[10px] font-black text-slate-400 uppercase tracking-widest')
+                            ui.label(f'${val:,.2f}').classes('text-3xl font-black text-slate-900 dark:text-slate-100')
+
+                with ui.card().classes('w-full p-0 premium-card overflow-hidden'):
+                    cols = [
+                        {'name': 'num',      'label': '#',        'field': 'number',    'align': 'left'},
+                        {'name': 'cust',     'label': 'Client',   'field': 'cname',     'align': 'left'},
+                        {'name': 'date',     'label': 'Date',     'field': 'date_fmt',  'align': 'left'},
+                        {'name': 'status',   'label': 'Status',   'field': 'status',    'align': 'center'},
+                        {'name': 'subtotal', 'label': 'Subtotal', 'field': 'sub_fmt',   'align': 'right'},
+                        {'name': 'taxes',    'label': 'Taxes',    'field': 'tax_fmt',   'align': 'right'},
+                        {'name': 'total',    'label': 'Total',    'field': 'total_fmt', 'align': 'right'},
+                    ]
+                    rows = [{
+                        **i.model_dump(),
+                        'cname':     cust_map.get(i.customer_id, '?'),
+                        'date_fmt':  i.date.strftime('%Y-%m-%d'),
+                        'sub_fmt':   f'${i.subtotal:,.2f}',
+                        'tax_fmt':   f'${i.tax_total:,.2f}',
+                        'total_fmt': f'${i.total:,.2f}',
+                    } for i in invoices]
+                    if rows:
+                        t = ui.table(columns=cols, rows=rows, row_key='id').classes('w-full border-none shadow-none')
+                        t.add_slot('body-cell-status', '''<q-td :props="props"><q-badge :color="props.row.status === 'Paid' ? 'emerald-500' : (props.row.status === 'Sent' ? 'indigo-500' : (props.row.status === 'Cancelled' ? 'red-500' : 'amber-500'))" :style="{padding:'4px 12px',borderRadius:'999px',fontWeight:'700',fontSize:'10px'}">{{ props.row.status }}</q-badge></q-td>''')
+                    else:
+                        with ui.column().classes('w-full items-center justify-center p-10'):
+                            ui.icon('search_off', size='40px', color='slate-300')
+                            ui.label('No invoices in this period').classes('text-slate-400 text-sm mt-2')
+
+            # ── TAX REPORT ──
+            with ui.column().classes('w-full gap-4 mt-6'):
+                with ui.row().classes('items-center gap-3'):
+                    ui.icon('account_balance', color='emerald-600', size='24px')
+                    ui.label('Tax Report').classes('text-2xl font-bold text-slate-800 dark:text-slate-200')
+                ui.label('Based on paid invoices only').classes('text-xs text-slate-400 -mt-2')
+
+                with ui.row().classes('w-full gap-4'):
+                    for label, val, sub, color in [
+                        ('TPS Collected',   tps_collected,  f'5% on ${paid_subtotal:,.2f}',    'blue-600'),
+                        ('TVQ Collected',   tvq_collected,  f'9.975% on ${paid_subtotal:,.2f}', 'purple-600'),
+                        ('Total Taxes Due', tps_collected + tvq_collected, 'TPS + TVQ',         'emerald-600'),
+                        ('Taxable Revenue', paid_subtotal,  f'{len(paid_invs)} paid invoices',  'indigo-600'),
+                    ]:
+                        with ui.card().classes('flex-1 p-6 premium-card'):
+                            ui.label(label).classes('text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2')
+                            ui.label(f'${val:,.2f}').classes('text-3xl font-black text-slate-900 dark:text-slate-100')
+                            ui.label(sub).classes('text-xs text-slate-400 mt-1')
+
+                with ui.card().classes('w-full p-0 premium-card overflow-hidden'):
+                    tax_cols = [
+                        {'name': 'num',      'label': '#',            'field': 'number',   'align': 'left'},
+                        {'name': 'cust',     'label': 'Client',       'field': 'cname',    'align': 'left'},
+                        {'name': 'date',     'label': 'Date',         'field': 'date_fmt', 'align': 'left'},
+                        {'name': 'subtotal', 'label': 'Subtotal',     'field': 'sub_fmt',  'align': 'right'},
+                        {'name': 'tps',      'label': 'TPS (5%)',     'field': 'tps_fmt',  'align': 'right'},
+                        {'name': 'tvq',      'label': 'TVQ (9.975%)', 'field': 'tvq_fmt',  'align': 'right'},
+                        {'name': 'total',    'label': 'Total',        'field': 'total_fmt','align': 'right'},
+                    ]
+                    tax_rows = [{
+                        **i.model_dump(),
+                        'cname':     cust_map.get(i.customer_id, '?'),
+                        'date_fmt':  i.date.strftime('%Y-%m-%d'),
+                        'sub_fmt':   f'${i.subtotal:,.2f}',
+                        'tps_fmt':   f'${i.subtotal * TPS_RATE:,.2f}',
+                        'tvq_fmt':   f'${i.subtotal * TVQ_RATE:,.2f}',
+                        'total_fmt': f'${i.total:,.2f}',
+                    } for i in paid_invs]
+                    if tax_rows:
+                        ui.table(columns=tax_cols, rows=tax_rows, row_key='id').classes('w-full border-none shadow-none')
+                    else:
+                        with ui.column().classes('w-full items-center justify-center p-10'):
+                            ui.icon('receipt_long', size='40px', color='slate-300')
+                            ui.label('No paid invoices in this period').classes('text-slate-400 text-sm mt-2')
+
+    def apply_filter():
+        d_from = state['from']
+        d_to   = state['to'].replace(hour=23, minute=59, second=59)
+        filtered = [i for i in all_invoices if d_from <= i.date <= d_to]
+        render_reports(content_area, filtered)
+
+    # ── Page layout ──
+    with ui.column().classes('w-full p-8 max-w-7xl mx-auto animate-fade-in'):
+        ui.label('Reports').classes('text-4xl font-extrabold text-slate-900 dark:text-slate-100 mb-2')
+        ui.label('Sales & tax summaries for any period').classes('text-slate-400 text-base mb-8')
+
+        with ui.card().classes('w-full p-6 premium-card mb-6'):
+            preset_btns = {}
+
+            def set_preset(name):
+                state['preset'] = name
+                for n, btn in preset_btns.items():
+                    if n == name:
+                        btn.classes(replace='btn-primary h-9 rounded-lg px-4 text-sm')
+                    else:
+                        btn.classes(replace='h-9 rounded-lg px-4 text-sm bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300')
+                if name != 'Custom':
+                    d_from, d_to = PRESETS[name]
+                    state['from'] = d_from
+                    state['to']   = d_to
+                    custom_row.set_visibility(False)
+                    apply_filter()
+                else:
+                    custom_row.set_visibility(True)
+
+            with ui.row().classes('items-center gap-3 flex-wrap'):
+                ui.label('Period:').classes('text-sm font-semibold text-slate-500 mr-2')
+                for name in PRESETS:
+                    is_active = name == state['preset']
+                    cls = 'btn-primary h-9 rounded-lg px-4 text-sm' if is_active else 'h-9 rounded-lg px-4 text-sm bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+                    btn = ui.button(name, on_click=lambda n=name: set_preset(n)).classes(cls)
+                    preset_btns[name] = btn
+
+            with ui.row().classes('items-center gap-4 mt-3') as custom_row:
+                custom_row.set_visibility(False)
+                from_input = ui.input('From', value=state['from'].strftime('%Y-%m-%d')).props('dense outlined').classes('w-40')
+                to_input   = ui.input('To',   value=state['to'].strftime('%Y-%m-%d')).props('dense outlined').classes('w-40')
+                def apply_custom():
+                    try:
+                        state['from'] = datetime.strptime(from_input.value, '%Y-%m-%d')
+                        state['to']   = datetime.strptime(to_input.value,   '%Y-%m-%d')
+                        apply_filter()
+                    except ValueError:
+                        ui.notify('Invalid date format. Use YYYY-MM-DD', color='red-500')
+                ui.button('Apply', on_click=apply_custom).classes('btn-primary h-9 rounded-lg px-5 text-sm')
+
+        content_area = ui.column().classes('w-full gap-6')
+        apply_filter()
+
 
 @ui.page('/accounts')
 def accounts_page():
     inject_premium_styles(); create_menu('/accounts')
+
+    TYPE_COLORS = {
+        'Asset': 'blue-500', 'Liability': 'red-400',
+        'Income': 'emerald-500', 'Expense': 'amber-500', 'Equity': 'purple-500',
+    }
+
+    def render_accounts(container):
+        container.clear()
+        with Session(engine) as s:
+            accounts = s.exec(select(Account).order_by(Account.code)).all()
+        with container:
+            with ui.row().classes('w-full px-6 py-2 gap-4'):
+                ui.label('CODE').classes('w-16 text-[11px] font-black text-slate-400 uppercase tracking-widest')
+                ui.label('NAME').classes('flex-1 text-[11px] font-black text-slate-400 uppercase tracking-widest')
+                ui.label('TYPE').classes('w-28 text-[11px] font-black text-slate-400 uppercase tracking-widest')
+                ui.label('STATUS').classes('w-20 text-[11px] font-black text-slate-400 uppercase tracking-widest')
+                ui.label('').classes('w-24')  # actions spacer
+            for acc in accounts:
+                with ui.card().classes('w-full px-6 py-3 premium-card'):
+                    display = ui.row().classes('w-full items-center gap-4')
+                    edit_row = ui.row().classes('w-full items-center gap-4')
+                    edit_row.set_visibility(False)
+
+                    with display:
+                        ui.label(acc.code).classes('w-16 font-mono text-slate-400 text-sm shrink-0')
+                        ui.label(acc.name).classes('flex-1 font-semibold' + ('' if acc.is_active else ' line-through text-slate-400'))
+                        with ui.row().classes('w-28 shrink-0 items-center'):
+                            ui.badge(acc.type, color=TYPE_COLORS.get(acc.type, 'slate-400')).classes('text-xs px-3 py-1')
+                        with ui.row().classes('w-20 shrink-0 items-center'):
+                            ui.badge('Active' if acc.is_active else 'Inactive',
+                                     color='emerald-500' if acc.is_active else 'slate-400').classes('text-xs px-3 py-1')
+                        with ui.row().classes('w-24 shrink-0 items-center justify-end gap-1'):
+                            def start_edit(d=display, e=edit_row):
+                                d.set_visibility(False); e.set_visibility(True)
+                            ui.button(icon='edit', on_click=start_edit).props('flat round dense').classes('text-slate-400')
+                            if acc.is_system:
+                                ui.icon('lock', size='18px').classes('text-slate-300').tooltip('System account — protected')
+                            else:
+                                def toggle_active(aid=acc.id, active=acc.is_active):
+                                    with Session(engine) as s:
+                                        a = s.get(Account, aid); a.is_active = not active
+                                        s.add(a); s.commit()
+                                    ui.navigate.reload()
+                                ui.button(
+                                    icon='toggle_on' if acc.is_active else 'toggle_off',
+                                    on_click=toggle_active
+                                ).props('flat round dense').classes('text-emerald-500' if acc.is_active else 'text-slate-300')
+
+                                def delete_account(aid=acc.id, aname=acc.name):
+                                    with Session(engine) as s:
+                                        a = s.get(Account, aid); s.delete(a); s.commit()
+                                    logger.info(f"Account deleted: {aname}")
+                                    ui.notify(f'Account "{aname}" deleted.', color='emerald-500')
+                                    ui.navigate.reload()
+                                ui.button(icon='delete_outline', on_click=delete_account).props('flat round dense').classes('text-red-300')
+
+                    with edit_row:
+                        ui.label(acc.code).classes('w-16 font-mono text-slate-400 text-sm')
+                        name_in = ui.input(value=acc.name).classes('flex-1').props('dense outlined')
+                        desc_in = ui.input(value=acc.description or '').props('dense outlined placeholder=Description').classes('flex-1')
+
+                        def save(aid=acc.id, ni=name_in, di=desc_in):
+                            with Session(engine) as s:
+                                a = s.get(Account, aid)
+                                a.name = ni.value.strip()
+                                a.description = di.value.strip() or None
+                                s.add(a); s.commit()
+                            logger.info(f"Account {aid} updated: {ni.value}")
+                            ui.navigate.reload()
+
+                        def cancel(d=display, e=edit_row):
+                            e.set_visibility(False); d.set_visibility(True)
+
+                        ui.button(icon='check', on_click=save).props('flat round dense').classes('text-emerald-600')
+                        ui.button(icon='close', on_click=cancel).props('flat round dense').classes('text-slate-400')
+
+    def open_add_account():
+        with ui.dialog() as dlg, ui.card().classes('p-8 w-[480px]'):
+            ui.label('New Account').classes('text-2xl font-bold mb-6')
+            code_in = ui.input('Code (e.g. 5300)').classes('w-full').props('outlined rounded')
+            name_in = ui.input('Name').classes('w-full').props('outlined rounded')
+            type_in = ui.select(
+                {t.value: t.value for t in AccountType},
+                label='Type', value=AccountType.EXPENSE.value
+            ).classes('w-full').props('outlined rounded')
+
+            def save_new():
+                if not code_in.value.strip() or not name_in.value.strip():
+                    ui.notify('Code and Name are required.', color='red-500'); return
+                with Session(engine) as s:
+                    exists = s.exec(select(Account).where(Account.code == code_in.value.strip())).first()
+                    if exists:
+                        ui.notify('Account code already exists.', color='red-500'); return
+                    s.add(Account(code=code_in.value.strip(), name=name_in.value.strip(), type=type_in.value))
+                    s.commit()
+                logger.info(f"Account created: {code_in.value} {name_in.value}")
+                dlg.close(); ui.navigate.reload()
+
+            with ui.row().classes('w-full justify-end gap-3 mt-6'):
+                ui.button('Cancel', on_click=dlg.close).props('flat no-caps').classes('text-slate-400')
+                ui.button('Create', on_click=save_new).classes('btn-primary h-12 rounded-xl px-8')
+        dlg.open()
+
     with ui.column().classes('w-full p-8 max-w-7xl mx-auto animate-fade-in'):
         with ui.row().classes('w-full justify-between items-end mb-10'):
             ui.label(_('accounts')).classes('text-4xl font-extrabold text-slate-900 dark:text-slate-100')
             with ui.row().classes('gap-3'):
-                ui.button('JSON', icon='download', on_click=lambda: export_accounting_data('json')).classes('btn-primary h-12 rounded-xl')
-        with ui.card().classes('w-full p-0 premium-card overflow-hidden'):
-            with Session(engine) as s: ui.table(columns=[{'name':'c','label':'CODE','field':'code','align':'left'},{'name':'n','label':'NAME','field':'name','align':'left'}], rows=[a.model_dump() for a in s.exec(select(Account)).all()]).classes('w-full border-none shadow-none')
+                ui.button('Export JSON', icon='download', on_click=lambda: export_accounting_data('json')).classes('btn-secondary h-12 rounded-xl px-6').props('flat')
+                ui.button('Add Account', icon='add_circle', on_click=open_add_account).classes('btn-primary h-12 rounded-xl px-6')
+        container = ui.column().classes('w-full gap-2')
+        render_accounts(container)
 
 @ui.page('/customers')
 def customers_page():
     inject_premium_styles(); create_menu('/customers')
+
+    def has_invoices(customer_id: int) -> bool:
+        with Session(engine) as s:
+            return s.exec(select(Invoice).where(Invoice.customer_id == customer_id)).first() is not None
+
+    def render_customers(container):
+        container.clear()
+        with Session(engine) as s:
+            customers = s.exec(select(Customer).order_by(Customer.name)).all()
+        with container:
+            with ui.row().classes('w-full px-6 py-2 gap-4'):
+                ui.label('NAME').classes('flex-1 text-[11px] font-black text-slate-400 uppercase tracking-widest')
+                ui.label('EMAIL').classes('w-52 shrink-0 text-[11px] font-black text-slate-400 uppercase tracking-widest')
+                ui.label('PHONE').classes('w-36 shrink-0 text-[11px] font-black text-slate-400 uppercase tracking-widest')
+                ui.label('CONTACT').classes('w-36 shrink-0 text-[11px] font-black text-slate-400 uppercase tracking-widest')
+                ui.label('').classes('w-24 shrink-0')  # actions spacer
+            for cust in customers:
+                in_use = has_invoices(cust.id)
+                with ui.card().classes('w-full px-6 py-3 premium-card'):
+                    display = ui.row().classes('w-full items-center gap-4')
+                    edit_row = ui.column().classes('w-full gap-3')
+                    edit_row.set_visibility(False)
+
+                    with display:
+                        ui.label(cust.name).classes('flex-1 font-semibold')
+                        ui.label(cust.email).classes('w-52 shrink-0 text-slate-500 text-sm truncate')
+                        ui.label(cust.phone or '—').classes('w-36 shrink-0 text-slate-500 text-sm')
+                        ui.label(cust.contact or '—').classes('w-36 shrink-0 text-slate-500 text-sm')
+                        with ui.row().classes('w-24 shrink-0 items-center justify-end gap-1'):
+                            def start_edit(d=display, e=edit_row):
+                                d.set_visibility(False); e.set_visibility(True)
+                            ui.button(icon='edit', on_click=start_edit).props('flat round dense').classes('text-slate-400')
+                            if in_use:
+                                ui.icon('receipt_long', size='18px').classes('text-slate-300').tooltip('Has invoices — cannot delete')
+                            else:
+                                def delete_customer(cid=cust.id, cname=cust.name):
+                                    with Session(engine) as s:
+                                        c = s.get(Customer, cid); s.delete(c); s.commit()
+                                    logger.info(f"Customer deleted: {cname}")
+                                    ui.notify(f'Customer "{cname}" deleted.', color='emerald-500')
+                                    ui.navigate.reload()
+                                ui.button(icon='delete_outline', on_click=delete_customer).props('flat round dense').classes('text-red-300')
+
+                    with edit_row:
+                        with ui.row().classes('w-full gap-3'):
+                            name_in = ui.input(value=cust.name).props('dense outlined placeholder=Name').classes('flex-1')
+                            email_in = ui.input(value=cust.email).props('dense outlined placeholder=Email').classes('flex-1')
+                        with ui.row().classes('w-full gap-3'):
+                            phone_in = ui.input(value=cust.phone or '').props('dense outlined placeholder=Phone').classes('w-48')
+                            contact_in = ui.input(value=cust.contact or '').props('dense outlined placeholder=Contact person').classes('flex-1')
+                            address_in = ui.input(value=cust.address or '').props('dense outlined placeholder=Address').classes('flex-1')
+
+                        def save(cid=cust.id, ni=name_in, ei=email_in, phi=phone_in, coi=contact_in, ai=address_in):
+                            if not ni.value.strip():
+                                ui.notify('Name is required.', color='red-500'); return
+                            if not ei.value.strip():
+                                ui.notify('Email is required.', color='red-500'); return
+                            with Session(engine) as s:
+                                c = s.get(Customer, cid)
+                                c.name = ni.value.strip()
+                                c.email = ei.value.strip()
+                                c.phone = phi.value.strip() or None
+                                c.contact = coi.value.strip() or None
+                                c.address = ai.value.strip() or None
+                                s.add(c); s.commit()
+                            logger.info(f"Customer {cid} updated: {ni.value}")
+                            ui.navigate.reload()
+
+                        def cancel(d=display, e=edit_row):
+                            e.set_visibility(False); d.set_visibility(True)
+
+                        with ui.row().classes('w-full justify-end gap-2'):
+                            ui.button('Save', icon='check', on_click=save).props('no-caps').classes('btn-primary h-9 rounded-lg px-4 text-sm')
+                            ui.button('Cancel', on_click=cancel).props('flat no-caps').classes('text-slate-400')
+
+    def open_add_customer():
+        with ui.dialog() as dlg, ui.card().classes('p-8 w-[520px]'):
+            ui.label('New Customer').classes('text-2xl font-bold mb-6')
+            name_in = ui.input('Name *').classes('w-full').props('outlined rounded')
+            email_in = ui.input('Email *').classes('w-full').props('outlined rounded')
+            with ui.row().classes('w-full gap-3'):
+                phone_in = ui.input('Phone').classes('flex-1').props('outlined rounded')
+                contact_in = ui.input('Contact Person').classes('flex-1').props('outlined rounded')
+            address_in = ui.input('Address').classes('w-full').props('outlined rounded')
+
+            def save_new():
+                if not name_in.value.strip():
+                    ui.notify('Name is required.', color='red-500'); return
+                if not email_in.value.strip():
+                    ui.notify('Email is required.', color='red-500'); return
+                with Session(engine) as s:
+                    s.add(Customer(
+                        name=name_in.value.strip(),
+                        email=email_in.value.strip(),
+                        phone=phone_in.value.strip() or None,
+                        contact=contact_in.value.strip() or None,
+                        address=address_in.value.strip() or None,
+                    ))
+                    s.commit()
+                logger.info(f"Customer created: {name_in.value}")
+                dlg.close(); ui.navigate.reload()
+
+            with ui.row().classes('w-full justify-end gap-3 mt-6'):
+                ui.button('Cancel', on_click=dlg.close).props('flat no-caps').classes('text-slate-400')
+                ui.button('Create', on_click=save_new).classes('btn-primary h-12 rounded-xl px-8')
+        dlg.open()
+
     with ui.column().classes('w-full p-8 max-w-7xl mx-auto animate-fade-in'):
-        ui.label(_('customers')).classes('text-4xl font-extrabold text-slate-900 dark:text-slate-100 mb-10')
-        with ui.card().classes('w-full p-0 premium-card overflow-hidden'):
-             with Session(engine) as s: ui.table(columns=[{'name':'n','field':'name','label':'NAME','align':'left'},{'name':'e','field':'email','label':'EMAIL','align':'left'}], rows=[c.model_dump() for c in s.exec(select(Customer)).all()]).classes('w-full border-none shadow-none')
+        with ui.row().classes('w-full justify-between items-end mb-10'):
+            ui.label(_('customers')).classes('text-4xl font-extrabold text-slate-900 dark:text-slate-100')
+            ui.button('Add Customer', icon='add_circle', on_click=open_add_customer).classes('btn-primary h-12 rounded-xl px-6')
+        container = ui.column().classes('w-full gap-2')
+        render_customers(container)
 
 @ui.page('/services')
 def services_page():
     inject_premium_styles(); create_menu('/services')
+
+    def is_in_use(service_id: int) -> bool:
+        with Session(engine) as s:
+            return s.exec(select(InvoiceItem).where(InvoiceItem.service_id == service_id)).first() is not None
+
+    def render_services(container):
+        container.clear()
+        with Session(engine) as s:
+            services = s.exec(select(Service).order_by(Service.name)).all()
+        with container:
+            with ui.row().classes('w-full px-6 py-2 gap-4'):
+                ui.label('NAME').classes('flex-1 text-[11px] font-black text-slate-400 uppercase tracking-widest')
+                ui.label('DESCRIPTION').classes('flex-1 text-[11px] font-black text-slate-400 uppercase tracking-widest')
+                ui.label('UNIT PRICE').classes('w-28 text-right text-[11px] font-black text-slate-400 uppercase tracking-widest')
+                ui.label('STATUS').classes('w-20 text-[11px] font-black text-slate-400 uppercase tracking-widest')
+                ui.label('').classes('w-24')  # actions spacer
+            for svc in services:
+                in_use = is_in_use(svc.id)
+                with ui.card().classes('w-full px-6 py-3 premium-card'):
+                    display = ui.row().classes('w-full items-center gap-4')
+                    edit_row = ui.row().classes('w-full items-center gap-4')
+                    edit_row.set_visibility(False)
+
+                    with display:
+                        ui.label(svc.name).classes('flex-1 font-semibold' + ('' if svc.is_active else ' line-through text-slate-400'))
+                        ui.label(svc.description or '').classes('flex-1 text-slate-500 text-sm truncate')
+                        with ui.row().classes('w-28 shrink-0 items-center justify-end'):
+                            ui.label(f'${svc.unit_price:,.2f}').classes('font-semibold text-slate-700 dark:text-slate-300')
+                        with ui.row().classes('w-20 shrink-0 items-center'):
+                            ui.badge('Active' if svc.is_active else 'Inactive',
+                                     color='emerald-500' if svc.is_active else 'slate-400').classes('text-xs px-3 py-1')
+                        with ui.row().classes('w-24 shrink-0 items-center justify-end gap-1'):
+                            def start_edit(d=display, e=edit_row):
+                                d.set_visibility(False); e.set_visibility(True)
+                            ui.button(icon='edit', on_click=start_edit).props('flat round dense').classes('text-slate-400')
+
+                            def toggle_active(sid=svc.id, active=svc.is_active):
+                                with Session(engine) as s:
+                                    sv = s.get(Service, sid); sv.is_active = not active
+                                    s.add(sv); s.commit()
+                                ui.navigate.reload()
+                            ui.button(
+                                icon='toggle_on' if svc.is_active else 'toggle_off',
+                                on_click=toggle_active
+                            ).props('flat round dense').classes('text-emerald-500' if svc.is_active else 'text-slate-300')
+
+                            if in_use:
+                                ui.icon('link', size='18px').classes('text-slate-300').tooltip('Used in invoices — cannot delete')
+                            else:
+                                def delete_service(sid=svc.id, sname=svc.name):
+                                    with Session(engine) as s:
+                                        sv = s.get(Service, sid); s.delete(sv); s.commit()
+                                    logger.info(f"Service deleted: {sname}")
+                                    ui.notify(f'Service "{sname}" deleted.', color='emerald-500')
+                                    ui.navigate.reload()
+                                ui.button(icon='delete_outline', on_click=delete_service).props('flat round dense').classes('text-red-300')
+
+                    with edit_row:
+                        name_in = ui.input(value=svc.name).props('dense outlined placeholder=Name').classes('flex-1')
+                        desc_in = ui.input(value=svc.description or '').props('dense outlined placeholder=Description').classes('flex-1')
+                        price_in = ui.number(value=svc.unit_price, min=0).props('dense outlined prefix=$').classes('w-32')
+
+                        def save(sid=svc.id, ni=name_in, di=desc_in, pi=price_in):
+                            if not ni.value.strip():
+                                ui.notify('Name is required.', color='red-500'); return
+                            with Session(engine) as s:
+                                sv = s.get(Service, sid)
+                                sv.name = ni.value.strip()
+                                sv.description = di.value.strip() or None
+                                sv.unit_price = pi.value or 0.0
+                                s.add(sv); s.commit()
+                            logger.info(f"Service {sid} updated: {ni.value}")
+                            ui.navigate.reload()
+
+                        def cancel(d=display, e=edit_row):
+                            e.set_visibility(False); d.set_visibility(True)
+
+                        ui.button(icon='check', on_click=save).props('flat round dense').classes('text-emerald-600')
+                        ui.button(icon='close', on_click=cancel).props('flat round dense').classes('text-slate-400')
+
+    def open_add_service():
+        with ui.dialog() as dlg, ui.card().classes('p-8 w-[480px]'):
+            ui.label('New Service').classes('text-2xl font-bold mb-6')
+            name_in = ui.input('Name').classes('w-full').props('outlined rounded')
+            desc_in = ui.input('Description').classes('w-full').props('outlined rounded')
+            price_in = ui.number('Unit Price', value=0.0, min=0).classes('w-full').props('outlined rounded prefix=$')
+
+            def save_new():
+                if not name_in.value.strip():
+                    ui.notify('Name is required.', color='red-500'); return
+                with Session(engine) as s:
+                    s.add(Service(name=name_in.value.strip(), description=desc_in.value.strip() or None, unit_price=price_in.value or 0.0))
+                    s.commit()
+                logger.info(f"Service created: {name_in.value}")
+                dlg.close(); ui.navigate.reload()
+
+            with ui.row().classes('w-full justify-end gap-3 mt-6'):
+                ui.button('Cancel', on_click=dlg.close).props('flat no-caps').classes('text-slate-400')
+                ui.button('Create', on_click=save_new).classes('btn-primary h-12 rounded-xl px-8')
+        dlg.open()
+
     with ui.column().classes('w-full p-8 max-w-7xl mx-auto animate-fade-in'):
-        ui.label(_('services')).classes('text-4xl font-extrabold text-slate-900 dark:text-slate-100 mb-10')
-        with ui.card().classes('w-full p-0 premium-card overflow-hidden'):
-             with Session(engine) as s: ui.table(columns=[{'name':'n','field':'name','label':'NAME','align':'left'},{'name':'p','field':'unit_price','label':'PRICE','align':'right'}], rows=[ser.model_dump() for ser in s.exec(select(Service)).all()]).classes('w-full border-none shadow-none')
+        with ui.row().classes('w-full justify-between items-end mb-10'):
+            ui.label(_('services')).classes('text-4xl font-extrabold text-slate-900 dark:text-slate-100')
+            ui.button('Add Service', icon='add_circle', on_click=open_add_service).classes('btn-primary h-12 rounded-xl px-6')
+        container = ui.column().classes('w-full gap-2')
+        render_services(container)
 
 @ui.page('/recurring')
 def recurring_page():
@@ -417,9 +1016,9 @@ def settings_page():
 
                     ui.label('Upload Custom Template').classes('text-sm font-bold text-slate-400 uppercase tracking-widest mb-4')
 
-                    def handle_upload(e):
+                    async def handle_upload(e):
                         try:
-                            content = e.content.read().decode('utf-8')
+                            content = (await e.file.read()).decode('utf-8')
                             TemplateManager.import_template(content)
                             active_label.text = 'Active: Custom'
                             active_label.classes(remove='text-slate-400', add='text-emerald-600 font-semibold')

@@ -75,7 +75,7 @@ class Invoice(SQLModel, table=True):
     date: datetime = Field(default_factory=datetime.utcnow)
     due_date: Optional[datetime] = None
     customer_id: int = Field(foreign_key="customer.id")
-    status: str = Field(default="Draft") # Draft, Sent, Paid, Overdue
+    status: str = Field(default="Draft") # Draft, Sent, Paid, Cancelled
     subtotal: float = Field(default=0.0)
     tax_total: float = Field(default=0.0)
     total: float = Field(default=0.0)
