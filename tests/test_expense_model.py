@@ -17,7 +17,7 @@ def engine_and_session():
         yield test_engine, session, acc.id
 
 def test_expense_can_be_created(engine_and_session):
-    eng, session, acc_id = engine_and_session
+    _, session, acc_id = engine_and_session
     exp = Expense(
         description="Phone bill",
         amount=80.0,
@@ -34,7 +34,7 @@ def test_expense_can_be_created(engine_and_session):
     assert exp.total == 91.98
 
 def test_expense_total_fields(engine_and_session):
-    eng, session, acc_id = engine_and_session
+    _, session, acc_id = engine_and_session
     exp = Expense(description="No tax", amount=100.0, total=100.0, account_id=acc_id)
     session.add(exp)
     session.commit()
