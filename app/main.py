@@ -498,14 +498,45 @@ def expenses_page():
             filter_state['to'] = d_to
             refresh_table()
 
+        def export_expenses_csv():
+            d_from = filter_state['from']
+            d_to   = filter_state['to'].replace(hour=23, minute=59, second=59)
+            with Session(engine) as s:
+                expenses = s.exec(
+                    select(Expense).where(Expense.date >= d_from, Expense.date <= d_to)
+                    .order_by(Expense.date.desc())
+                ).all()
+                acct_map = {a.id: f"{a.code} — {a.name}" for a in s.exec(select(Account).where(Account.type == AccountType.EXPENSE)).all()}
+            if not expenses:
+                ui.notify('No expenses to export in this period', color='amber-500'); return
+            path = 'data/expenses_export.csv'
+            with open(path, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['Date', 'Description', 'Account', 'Subtotal', 'TPS', 'TVQ', 'Total', 'Notes'])
+                for exp in expenses:
+                    writer.writerow([
+                        exp.date.strftime('%Y-%m-%d'),
+                        exp.description,
+                        acct_map.get(exp.account_id, '?'),
+                        f'{exp.amount:.2f}',
+                        f'{exp.tps:.2f}',
+                        f'{exp.tvq:.2f}',
+                        f'{exp.total:.2f}',
+                        exp.notes or '',
+                    ])
+            ui.download(path)
+            ui.notify(f'Exported {len(expenses)} expenses to CSV', color='emerald-500')
+
         with ui.card().classes('w-full p-4 premium-card mb-4'):
-            with ui.row().classes('items-center gap-3 flex-wrap'):
-                ui.label('Period:').classes('text-sm font-semibold text-slate-500 mr-2')
-                for name in PRESETS:
-                    is_active = name == 'This Month'
-                    cls = 'btn-primary h-9 rounded-lg px-4 text-sm' if is_active else 'h-9 rounded-lg px-4 text-sm bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
-                    btn = ui.button(name, on_click=lambda n=name: set_expense_preset(n)).classes(cls)
-                    preset_btns[name] = btn
+            with ui.row().classes('w-full items-center justify-between flex-wrap gap-3'):
+                with ui.row().classes('items-center gap-3 flex-wrap'):
+                    ui.label('Period:').classes('text-sm font-semibold text-slate-500 mr-2')
+                    for name in PRESETS:
+                        is_active = name == 'This Month'
+                        cls = 'btn-primary h-9 rounded-lg px-4 text-sm' if is_active else 'h-9 rounded-lg px-4 text-sm bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+                        btn = ui.button(name, on_click=lambda n=name: set_expense_preset(n)).classes(cls)
+                        preset_btns[name] = btn
+                ui.button('Export CSV', icon='download', on_click=export_expenses_csv).props('flat').classes('h-9 rounded-lg px-4 text-sm text-emerald-600')
 
         # ── Expenses Table ──
         table_container = ui.column().classes('w-full')
