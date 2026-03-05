@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Invoice Template</title>
+    <style>
+        :root {
+            --primary: #1e40af; /* Indigo 800 */
+            --secondary: #64748b; /* Slate 500 */
+            --accent: #eff6ff; /* Blue 50 */
+            --text-dark: #0f172a; /* Slate 900 */
+            --text-light: #475569; /* Slate 600 */
+            --bg-page: #f8fafc; /* Slate 50 */
+            --border: #e2e8f0; /* Slate 200 */
+        }
+
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            color: var(--text-dark);
+            margin: 0;
+            padding: 40px;
+            background-color: var(--bg-page);
+            line-height: 1.5;
+        }
+
+        .invoice-container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: #fff;
+            padding: 60px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+            border-radius: 12px;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 60px;
+        }
+
+        .logo-section h1 {
+            color: var(--primary);
+            font-size: 32px;
+            font-weight: 800;
+            margin: 0;
+            letter-spacing: -0.025em;
+        }
+
+        .vendor-info {
+            font-size: 14px;
+            color: var(--text-light);
+            margin-top: 8px;
+        }
+
+        .status-badge {
+            background: var(--accent);
+            color: var(--primary);
+            padding: 6px 16px;
+            border-radius: 9999px;
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .meta-section {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 60px;
+            border-bottom: 2px solid var(--border);
+            padding-bottom: 30px;
+        }
+
+        .meta-col h3 {
+            font-size: 12px;
+            color: var(--secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            margin-bottom: 8px;
+        }
+
+        .meta-col p {
+            font-weight: 600;
+            margin: 0;
+        }
+
+        .billing-section {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 60px;
+        }
+
+        .bill-col {
+            flex: 1;
+        }
+
+        .bill-col h3 {
+            font-size: 12px;
+            color: var(--secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            margin-bottom: 12px;
+        }
+
+        .bill-col .entity {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+
+        .bill-col .address, .bill-col .contact {
+            font-size: 14px;
+            color: var(--text-light);
+            margin: 2px 0;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 40px;
+        }
+
+        th {
+            text-align: left;
+            padding: 12px 16px;
+            font-size: 12px;
+            color: var(--secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-bottom: 2px solid var(--text-dark);
+        }
+
+        td {
+            padding: 20px 16px;
+            border-bottom: 1px solid var(--border);
+            font-size: 14px;
+        }
+
+        .item-description {
+            font-weight: 600;
+            color: var(--text-dark);
+        }
+
+        .item-subtext {
+            font-size: 12px;
+            color: var(--secondary);
+            margin-top: 4px;
+        }
+
+        .totals-section {
+            display: flex;
+            justify-content: flex-end;
+        }
+
+        .totals-table {
+            width: 300px;
+        }
+
+        .totals-table tr td {
+            padding: 8px 16px;
+            border-bottom: none;
+        }
+
+        .total-row {
+            border-top: 2px solid var(--border);
+            margin-top: 10px;
+        }
+
+        .total-label {
+            font-weight: 700;
+            font-size: 16px;
+            color: var(--text-dark);
+        }
+
+        .total-value {
+            font-size: 24px;
+            font-weight: 800;
+            color: var(--primary);
+            text-align: right;
+        }
+
+        footer {
+            margin-top: 80px;
+            padding-top: 30px;
+            border-top: 1px solid var(--border);
+            font-size: 12px;
+            color: var(--secondary);
+        }
+
+        .notes {
+            margin-bottom: 20px;
+        }
+
+        /* Responsive */
+        @media (max-width: 600px) {
+            .invoice-container { padding: 30px; }
+            header, .meta-section, .billing-section { flex-direction: column; }
+            .meta-col, .bill-col { margin-bottom: 20px; }
+            .totals-table { width: 100%; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="invoice-container">
+    <header>
+        <div class="logo-section">
+            <h1>INVOICE</h1>
+            <div class="vendor-info">
+                <strong>{{ vendor_entity }}</strong><br>
+                {{ vendor_address }}<br>
+                Phone: {{ vendor_phone }}
+            </div>
+        </div>
+        <div class="status-badge">
+            {{ status }}
+        </div>
+    </header>
+
+    <div class="meta-section">
+        <div class="meta-col">
+            <h3>Invoice #</h3>
+            <p>{{ invoice_number }}</p>
+        </div>
+        <div class="meta-col">
+            <h3>Date Issued</h3>
+            <p>{{ issue_date }}</p>
+        </div>
+        <div class="meta-col">
+            <h3>Due Date</h3>
+            <p>{{ due_date }}</p>
+        </div>
+        <div class="meta-col">
+            <h3>Currency</h3>
+            <p>{{ currency }}</p>
+        </div>
+    </div>
+
+    <div class="billing-section">
+        <div class="bill-col">
+            <h3>Bill To</h3>
+            <p class="entity">{{ client_entity }}</p>
+            <p class="contact">Attn: {{ client_contact }}</p>
+            <p class="address">{{ client_address }}</p>
+            <p class="contact">{{ client_email }}</p>
+            <p class="contact">{{ client_phone }}</p>
+        </div>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Service / Description</th>
+                <th style="text-align: center;">Qty</th>
+                <th style="text-align: right;">Unit Price</th>
+                <th style="text-align: right;">Total</th>
+            </tr>
+        </thead>
+        <tbody>
+            <!-- TEMPLATE LOOP START: line_items -->
+            {{ line_items }}
+            <!-- TEMPLATE LOOP END: line_items -->
+        </tbody>
+    </table>
+
+    <div class="totals-section">
+        <table class="totals-table">
+            <tr>
+                <td>Subtotal</td>
+                <td style="text-align: right;">{{ subtotal }}</td>
+            </tr>
+            <tr>
+                <td>GST (TPS)</td>
+                <td style="text-align: right;">{{ gst }}</td>
+            </tr>
+            <tr>
+                <td>QST (TVQ)</td>
+                <td style="text-align: right;">{{ qst }}</td>
+            </tr>
+            <tr class="total-row">
+                <td class="total-label">Grand Total</td>
+                <td class="total-value">{{ total }}</td>
+            </tr>
+            <tr>
+                <td style="color: var(--secondary);">Balance Due</td>
+                <td style="text-align: right; font-weight: 700; color: var(--text-dark);">{{ balance_due }}</td>
+            </tr>
+        </table>
+    </div>
+
+    <footer>
+        <div class="notes">
+            <strong>Notes:</strong><br>
+            {{ notes }}
+        </div>
+        <div class="legal">
+            Thank you for your business. Please make payment by the due date.
+        </div>
+    </footer>
+</div>
+
+</body>
+</html>
