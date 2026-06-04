@@ -51,12 +51,12 @@ def invoice_display_status(invoice, today=None) -> str:
 
 def invoice_filter_period_bounds(period: str, today=None):
     today = today or datetime.today()
-    first_this_month = today.replace(day=1)
-    first_this_year = today.replace(month=1, day=1)
+    first_this_month = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    first_this_year = today.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
     last_month_end = first_this_month - timedelta(days=1)
-    last_month_start = last_month_end.replace(day=1)
-    last_year_start = today.replace(year=today.year - 1, month=1, day=1)
-    last_year_end = today.replace(year=today.year - 1, month=12, day=31)
+    last_month_start = last_month_end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    last_year_start = today.replace(year=today.year - 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    last_year_end = today.replace(year=today.year - 1, month=12, day=31, hour=23, minute=59, second=59, microsecond=999999)
 
     if period == "This Month":
         return first_this_month, today
@@ -131,7 +131,7 @@ def filter_and_sort_invoice_rows(rows, filters):
         filtered = [row for row in filtered if row.get("date") and row["date"] >= d_from]
 
     if d_to is not None:
-        end_bound = d_to.replace(hour=23, minute=59, second=59)
+        end_bound = d_to.replace(hour=23, minute=59, second=59, microsecond=999999)
         filtered = [row for row in filtered if row.get("date") and row["date"] <= end_bound]
 
     if sort == "Date oldest":
