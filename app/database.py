@@ -33,6 +33,7 @@ class CompanySettings(SQLModel, table=True):
     legal_name: str
     address: Optional[str] = None
     phone: Optional[str] = None
+    email: Optional[str] = None
     neq: Optional[str] = None # Numéro d'entreprise du Québec
     tps_number: Optional[str] = None
     tvq_number: Optional[str] = None

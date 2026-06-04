@@ -1,4 +1,5 @@
 import os
+from html import escape
 from pathlib import Path
 from datetime import datetime, timedelta
 from jinja2 import Environment, FileSystemLoader
@@ -59,9 +60,15 @@ class TemplateManager:
 
             items_html = ""
             for it in items:
+                description_lines = str(it.description).splitlines()
+                title = escape(description_lines[0]) if description_lines else ""
+                detail = "<br>".join(escape(line) for line in description_lines[1:])
+                description = title
+                if detail:
+                    description += f'<div class="item-detail">{detail}</div>'
                 items_html += f"""
                 <tr>
-                    <td><div class="item-description">{it.description}</div></td>
+                    <td><div class="item-description">{description}</div></td>
                     <td style="text-align: center;">{it.quantity}</td>
                     <td style="text-align: right;">${it.unit_price:,.2f}</td>
                     <td style="text-align: right;">${it.total:,.2f}</td>
@@ -74,6 +81,9 @@ class TemplateManager:
                 "vendor_entity": vendor_settings.legal_name if vendor_settings else "Your Legal Name INC.",
                 "vendor_address": vendor_settings.address if vendor_settings else "123 Professional Suite, Montréal, QC",
                 "vendor_phone": vendor_settings.phone if vendor_settings else "514-000-0000",
+                "vendor_email": vendor_settings.email if vendor_settings and getattr(vendor_settings, "email", None) else "",
+                "gst_number": vendor_settings.tps_number if vendor_settings and vendor_settings.tps_number else "",
+                "qst_number": vendor_settings.tvq_number if vendor_settings and vendor_settings.tvq_number else "",
                 "issue_date": invoice.date.strftime('%Y-%m-%d'),
                 "due_date": (invoice.due_date.strftime('%Y-%m-%d') if invoice.due_date else (invoice.date + timedelta(days=30)).strftime('%Y-%m-%d')),
                 "currency": vendor_settings.currency if vendor_settings else "CAD",

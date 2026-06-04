@@ -10,6 +10,25 @@ import os, json, csv
 import plotly.graph_objects as go
 from collections import defaultdict
 
+LAST_EXTERNAL_INVOICE_NUMBER = 100122
+
+
+def next_invoice_number(invoices) -> str:
+    numeric_numbers = []
+    for invoice in invoices:
+        number = str(getattr(invoice, "number", "")).strip()
+        if number.isdigit():
+            numeric_numbers.append(int(number))
+    return str(max(numeric_numbers + [LAST_EXTERNAL_INVOICE_NUMBER]) + 1)
+
+
+def invoice_item_description(service) -> str:
+    description = str(getattr(service, "description", "") or "").strip()
+    if description:
+        return f"{service.name}\n{description}"
+    return service.name
+
+
 # --- i18n System ---
 TRANSLATIONS = {
     'en': {
@@ -248,10 +267,13 @@ def invoices_page():
                     try:
                         with Session(engine) as s:
                             sub = sum((i['q'].value * i['p'].value) for i in line_items if i['s'].value)
-                            inv = Invoice(number=f"INV-{datetime.now().strftime('%m%d%H%M')}", customer_id=c_sel.value, date=datetime.strptime(i_date.value, '%Y-%m-%d'), subtotal=sub, tax_total=sub*0.14975, total=sub*1.14975, status='Draft')
+                            existing_invoices = s.exec(select(Invoice)).all()
+                            inv = Invoice(number=next_invoice_number(existing_invoices), customer_id=c_sel.value, date=datetime.strptime(i_date.value, '%Y-%m-%d'), subtotal=sub, tax_total=sub*0.14975, total=sub*1.14975, status='Draft')
                             s.add(inv); s.commit(); s.refresh(inv)
                             for i in line_items:
-                                if i['s'].value: s.add(InvoiceItem(invoice_id=inv.id, service_id=i['s'].value, description=next(ser.name for ser in services if ser.id == i['s'].value), quantity=i['q'].value, unit_price=i['p'].value, total=i['q'].value*i['p'].value))
+                                if i['s'].value:
+                                    service = next(ser for ser in services if ser.id == i['s'].value)
+                                    s.add(InvoiceItem(invoice_id=inv.id, service_id=i['s'].value, description=invoice_item_description(service), quantity=i['q'].value, unit_price=i['p'].value, total=i['q'].value*i['p'].value))
                             s.commit()
                             logger.info(f"Nueva factura creada: #{inv.number}, total=${inv.total:,.2f}, cliente_id={inv.customer_id}")
                             ui.notify('Invoice Saved!'); dialog.close(); ui.navigate.to('/invoices')
@@ -1363,7 +1385,7 @@ def settings_page():
     with Session(engine) as s:
         conf = s.exec(select(CompanySettings)).first()
         if not conf:
-            conf = CompanySettings(legal_name="New Business INC.", address="123 Street, City", phone="514-000-0000")
+            conf = CompanySettings(legal_name="New Business INC.", address="123 Street, City", phone="514-000-0000", email="")
             s.add(conf); s.commit(); s.refresh(conf)
     
     with ui.column().classes('w-full p-8 max-w-7xl mx-auto animate-fade-in'):
@@ -1376,7 +1398,9 @@ def settings_page():
                 ui.label('Company Metadata').classes('text-xl font-bold mb-6')
                 lname = ui.input('Legal Business Name', value=conf.legal_name).classes('w-full').props('outlined rounded')
                 addr = ui.input('Address', value=conf.address).classes('w-full').props('outlined rounded')
-                tel = ui.input('Phone', value=conf.phone).classes('w-full').props('outlined rounded')
+                with ui.row().classes('w-full gap-4'):
+                    tel = ui.input('Phone', value=conf.phone).classes('flex-1').props('outlined rounded')
+                    email = ui.input('Email', value=conf.email).classes('flex-1').props('outlined rounded')
                 
                 with ui.row().classes('w-full gap-4'):
                     tps = ui.input('GST #', value=conf.tps_number).classes('flex-1').props('outlined rounded')
@@ -1389,6 +1413,7 @@ def settings_page():
                             db_conf.legal_name = lname.value
                             db_conf.address = addr.value
                             db_conf.phone = tel.value
+                            db_conf.email = email.value
                             db_conf.tps_number = tps.value
                             db_conf.tvq_number = tvq.value
                             s.add(db_conf); s.commit()
