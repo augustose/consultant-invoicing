@@ -6,7 +6,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from sqlmodel import SQLModel, Session, create_engine
+from sqlmodel import SQLModel, Session, create_engine, select
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 
@@ -256,7 +256,9 @@ def test_create_csv_zip_contains_report_manifest_and_core_csv_files(tmp_path):
         html = archive.read("accountant_report.html").decode("utf-8")
         manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
         invoices = parse_csv(archive.read("invoices.csv").decode("utf-8"))
+        assert archive.namelist() == manifest["files"]
 
+    assert names == sorted(manifest["files"])
     assert "https://cdn.tailwindcss.com" in html
     assert "Augusto Sosa Escalada (Mac)" in html
     assert "2026-01-01 to 2026-01-31" in html
@@ -314,3 +316,87 @@ def test_empty_csv_zip_still_contains_report_and_headers(tmp_path):
 
     assert "No invoices or expenses were found for this period." in html
     assert invoices_csv.startswith("invoice_number,invoice_date,due_date")
+
+
+def test_csv_zip_neutralizes_formula_like_text_cells(tmp_path):
+    session = make_session()
+    customer = session.exec(select(Customer).where(Customer.name == "Cafe Parvis")).one()
+    invoice = session.exec(select(Invoice).where(Invoice.number == "100123")).one()
+    expense = session.exec(select(Expense).where(Expense.description == "Accounting software")).one()
+    account = session.exec(select(Account).where(Account.code == "5000")).one()
+    invoice_item = session.exec(select(InvoiceItem).where(InvoiceItem.invoice_id == invoice.id)).one()
+
+    customer.name = '=HYPERLINK("http://bad")'
+    customer.contact = "+SUM(1,2)"
+    customer.email = " @evil@example.com"
+    customer.address = "\t-danger street"
+    invoice.number = "=100123"
+    invoice.notes = "@cmd"
+    expense.description = "+SUM(1,2)"
+    expense.notes = " -expense note"
+    account.name = "@Software Account"
+    account.description = "-danger"
+    invoice_item.description = " =line item"
+    session.add_all([customer, invoice, expense, account, invoice_item])
+    session.commit()
+
+    zip_path = create_accountant_csv_zip(
+        session=session,
+        start_date=datetime(2026, 1, 1),
+        end_date=datetime(2026, 1, 31),
+        include_invoice_items=True,
+        export_dir=tmp_path,
+    )
+
+    with zipfile.ZipFile(zip_path) as archive:
+        invoices = parse_csv(archive.read("invoices.csv").decode("utf-8"))
+        expenses = parse_csv(archive.read("expenses.csv").decode("utf-8"))
+        customers = parse_csv(archive.read("customers.csv").decode("utf-8"))
+        accounts = parse_csv(archive.read("chart_of_accounts.csv").decode("utf-8"))
+        invoice_items = parse_csv(archive.read("invoice_items.csv").decode("utf-8"))
+
+    account_by_code = {row["code"]: row for row in accounts}
+    assert invoices[0]["invoice_number"] == "'=100123"
+    assert invoices[0]["customer_name"] == '\'=HYPERLINK("http://bad")'
+    assert invoices[0]["customer_email"] == "' @evil@example.com"
+    assert invoices[0]["notes"] == "'@cmd"
+    assert invoices[0]["invoice_date"] == "2026-01-15"
+    assert invoices[0]["subtotal"] == "600.00"
+    assert expenses[0]["description"] == "'+SUM(1,2)"
+    assert expenses[0]["account_name"] == "'@Software Account"
+    assert expenses[0]["notes"] == "' -expense note"
+    assert expenses[0]["date"] == "2026-01-20"
+    assert expenses[0]["subtotal"] == "100.00"
+    assert customers[0]["name"] == '\'=HYPERLINK("http://bad")'
+    assert customers[0]["contact"] == "'+SUM(1,2)"
+    assert customers[0]["email"] == "' @evil@example.com"
+    assert customers[0]["address"] == "'\t-danger street"
+    assert account_by_code["5000"]["name"] == "'@Software Account"
+    assert account_by_code["5000"]["description"] == "'-danger"
+    assert invoice_items[0]["invoice_number"] == "'=100123"
+    assert invoice_items[0]["customer_name"] == '\'=HYPERLINK("http://bad")'
+    assert invoice_items[0]["description"] == "' =line item"
+    assert invoice_items[0]["invoice_date"] == "2026-01-15"
+    assert invoice_items[0]["line_total"] == "600.00"
+
+
+def test_csv_zip_report_escapes_company_name_html(tmp_path):
+    session = make_session()
+    settings = session.exec(select(CompanySettings)).one()
+    settings.legal_name = '<script>alert("x")</script> & Co'
+    session.add(settings)
+    session.commit()
+
+    zip_path = create_accountant_csv_zip(
+        session=session,
+        start_date=datetime(2026, 1, 1),
+        end_date=datetime(2026, 1, 31),
+        include_invoice_items=False,
+        export_dir=tmp_path,
+    )
+
+    with zipfile.ZipFile(zip_path) as archive:
+        html = archive.read("accountant_report.html").decode("utf-8")
+
+    assert "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; Co" in html
+    assert '<script>alert("x")</script> & Co' not in html
