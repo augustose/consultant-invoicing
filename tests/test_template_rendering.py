@@ -93,3 +93,18 @@ def test_render_invoice_includes_vendor_email():
     html = TemplateManager.render_invoice(invoice, customer, [item], vendor)
 
     assert "augustose@gmail.com" in html
+
+
+def test_add_print_toolbar_adds_download_link_and_print_fallback():
+    html = "<html><head></head><body><main>Invoice body</main></body></html>"
+
+    result = TemplateManager.add_print_toolbar(html, download_url="/download/4")
+
+    assert "Download PDF" in result
+    assert 'href="/download/4"' in result
+    assert "Print" in result
+    assert "window.print()" in result
+    assert "@media print" in result
+    assert ".print-toolbar" in result
+    assert "<body>" in result
+    assert result.index("print-toolbar") < result.index("<main>Invoice body</main>")

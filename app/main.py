@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta
 from nicegui import app, ui
 from sqlmodel import Session, select
-from starlette.responses import HTMLResponse
+from starlette.responses import HTMLResponse, Response
 from database import engine, Account, TaxRate, AccountType, Customer, Service, Invoice, InvoiceItem, RecurringProfile, CompanySettings, Expense
+from pdf_utils import build_invoice_pdf
 from template_utils import TemplateManager
 import log_config  # noqa: F401 — initializes logging on import
 from loguru import logger
@@ -180,7 +181,7 @@ def open_invoice_preview(inv_id):
                     ui.label(f'${inv.total:,.2f}').classes('text-xl font-black text-indigo-600')
         with ui.row().classes('w-full justify-center p-6 gap-4'):
             ui.button('Close', on_click=d.close).props('flat text-color=white')
-            ui.button('Print / Save PDF', icon='print', on_click=lambda: ui.run_javascript(f'window.open("/preview/{inv.id}", "_blank")')).classes('btn-primary')
+            ui.button('Download PDF', icon='file_download', on_click=lambda: ui.run_javascript(f'window.open("/download/{inv.id}", "_blank")')).classes('btn-primary')
     d.open()
 
 # --- Logic Actions ---
@@ -291,8 +292,8 @@ def invoices_page():
             rows = [{**i.model_dump(), 'cname': next((c.name for c in customers if c.id == i.customer_id), '?'), 'total_fmt': f'${i.total:,.2f}'} for i in invoices]
             table = ui.table(columns=cols, rows=rows, row_key='id').classes('w-full border-none shadow-none')
             table.add_slot('body-cell-status', '''<q-td :props="props"><q-badge :color="props.row.status === 'Paid' ? 'emerald-500' : (props.row.status === 'Sent' ? 'indigo-500' : (props.row.status === 'Cancelled' ? 'red-500' : 'amber-500'))" :style="{padding:'8px 16px',borderRadius:'100px',fontWeight:'700',fontSize:'10px'}">{{ props.row.status }}</q-badge></q-td>''')
-            table.add_slot('body-cell-actions', '''<q-td :props="props"><q-btn flat round icon="visibility" @click="$parent.$emit('preview', props.row.id)" /><q-btn flat round color="indigo-600" icon="print" @click="$parent.$emit('print', props.row.id)" /><q-btn v-if="props.row.status === 'Draft'" flat round color="indigo-400" icon="send" title="Mark as Sent" @click="$parent.$emit('sent', props.row.id)" /><q-btn v-if="props.row.status === 'Sent'" flat round color="emerald-500" icon="check" title="Mark as Paid" @click="$parent.$emit('paid', props.row.id)" /><q-btn v-if="props.row.status !== 'Paid' && props.row.status !== 'Cancelled'" flat round color="red-300" icon="cancel" title="Cancel invoice" @click="$parent.$emit('cancel', props.row.id)" /></q-td>''')
-            table.on('preview', lambda e: open_invoice_preview(e.args)); table.on('sent', lambda e: mark_invoice_as_sent_action(e.args)); table.on('paid', lambda e: mark_invoice_as_paid_action(e.args)); table.on('cancel', lambda e: mark_invoice_as_cancelled_action(e.args)); table.on('print', lambda e: ui.run_javascript(f'window.open("/preview/{e.args}", "_blank")'))
+            table.add_slot('body-cell-actions', '''<q-td :props="props"><q-btn flat round icon="visibility" title="Preview" @click="$parent.$emit('preview', props.row.id)" /><q-btn flat round color="indigo-600" icon="file_download" title="Download PDF" @click="$parent.$emit('download', props.row.id)" /><q-btn v-if="props.row.status === 'Draft'" flat round color="indigo-400" icon="send" title="Mark as Sent" @click="$parent.$emit('sent', props.row.id)" /><q-btn v-if="props.row.status === 'Sent'" flat round color="emerald-500" icon="check" title="Mark as Paid" @click="$parent.$emit('paid', props.row.id)" /><q-btn v-if="props.row.status !== 'Paid' && props.row.status !== 'Cancelled'" flat round color="red-300" icon="cancel" title="Cancel invoice" @click="$parent.$emit('cancel', props.row.id)" /></q-td>''')
+            table.on('preview', lambda e: open_invoice_preview(e.args)); table.on('sent', lambda e: mark_invoice_as_sent_action(e.args)); table.on('paid', lambda e: mark_invoice_as_paid_action(e.args)); table.on('cancel', lambda e: mark_invoice_as_cancelled_action(e.args)); table.on('download', lambda e: ui.run_javascript(f'window.open("/download/{e.args}", "_blank")'))
 
 @ui.page('/')
 def dashboard_page():
@@ -1511,11 +1512,37 @@ async def preview_invoice_html(inv_id: int):
             items = s.exec(select(InvoiceItem).where(InvoiceItem.invoice_id == inv_id)).all()
             conf = s.exec(select(CompanySettings)).first()
             html_content = TemplateManager.render_invoice(inv, cust, items, conf)
+            html_content = TemplateManager.add_print_toolbar(html_content, download_url=f"/download/{inv_id}")
             logger.info(f"HTML preview servido para factura #{inv.number}")
             return HTMLResponse(html_content)
     except Exception as e:
         logger.exception(f"Error al servir preview HTML para factura ID={inv_id}")
         return HTMLResponse(f"<h1>Error</h1><pre>{e}</pre>", status_code=500)
+
+
+@app.get("/download/{inv_id}")
+async def download_invoice_pdf(inv_id: int):
+    """Download a real PDF invoice."""
+    try:
+        with Session(engine) as s:
+            inv = s.get(Invoice, inv_id)
+            if not inv:
+                return HTMLResponse("<h1>Invoice not found</h1>", status_code=404)
+            cust = s.get(Customer, inv.customer_id)
+            items = s.exec(select(InvoiceItem).where(InvoiceItem.invoice_id == inv_id)).all()
+            conf = s.exec(select(CompanySettings)).first()
+            pdf_content = build_invoice_pdf(inv, cust, items, conf)
+            filename = f"Invoice_{inv.number}_{inv.date.strftime('%Y-%m-%d')}.pdf"
+            logger.info(f"PDF descargado para factura #{inv.number}")
+            return Response(
+                pdf_content,
+                media_type="application/pdf",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            )
+    except Exception as e:
+        logger.exception(f"Error al generar PDF para factura ID={inv_id}")
+        return HTMLResponse(f"<h1>Error</h1><pre>{e}</pre>", status_code=500)
+
 
 if __name__ in {"__main__", "__mp_main__"}:
     from database import create_db_and_tables, seed_initial_data

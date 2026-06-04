@@ -47,6 +47,54 @@ class TemplateManager:
         return TemplateManager.CUSTOM_TEMPLATE.exists()
 
     @staticmethod
+    def add_print_toolbar(html_content: str, download_url: str = "") -> str:
+        """Adds a browser toolbar that is hidden from printed output."""
+        download_href = download_url or "#"
+        toolbar = """
+        <style>
+            .print-toolbar {
+                position: sticky;
+                top: 0;
+                z-index: 9999;
+                display: flex;
+                justify-content: center;
+                gap: 12px;
+                padding: 12px;
+                background: #f8fafc;
+                border-bottom: 1px solid #e2e8f0;
+                font-family: Arial, Helvetica, sans-serif;
+            }
+            .print-toolbar a,
+            .print-toolbar button {
+                border: 0;
+                border-radius: 6px;
+                background: #414141;
+                color: #ffffff;
+                cursor: pointer;
+                display: inline-block;
+                font-size: 14px;
+                font-weight: 700;
+                padding: 10px 16px;
+                text-decoration: none;
+            }
+            .print-toolbar button.secondary {
+                background: #777777;
+            }
+            @media print {
+                .print-toolbar { display: none; }
+            }
+        </style>
+        <div class="print-toolbar">
+            <a href="__DOWNLOAD_HREF__" target="_blank" rel="noopener">Download PDF</a>
+            <button type="button" class="secondary" onclick="window.print()">Print</button>
+            <button type="button" class="secondary" onclick="window.close()">Close</button>
+        </div>
+        """.replace("__DOWNLOAD_HREF__", download_href)
+        if "<body>" in html_content:
+            return html_content.replace("<body>", f"<body>{toolbar}", 1)
+        return f"{toolbar}{html_content}"
+
+    @staticmethod
     def render_invoice(invoice, customer, items, vendor_settings) -> str:
         """Renders the HTML invoice using the active template."""
         logger.info(f"Rendering invoice #{invoice.number}")
