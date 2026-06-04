@@ -9,7 +9,7 @@ from sqlmodel import SQLModel, Session, create_engine
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 
 from database import Account, AccountType, CompanySettings, Customer, Expense, Invoice, InvoiceItem, Service  # noqa: E402
-from export_utils import build_accountant_export_context, rows_to_csv_text  # noqa: E402
+from export_utils import build_accountant_export_context, money, rows_to_csv_text  # noqa: E402
 
 
 def make_session():
@@ -56,6 +56,24 @@ def make_session():
         total=689.85,
         notes="January support",
     )
+    boundary_invoice = Invoice(
+        number="100125",
+        date=datetime(2026, 1, 31, 23, 59, 59),
+        customer_id=customer.id,
+        status="Paid",
+        subtotal=50.0,
+        tax_total=7.49,
+        total=57.49,
+    )
+    after_period_invoice = Invoice(
+        number="100126",
+        date=datetime(2026, 2, 1, 0, 0, 0),
+        customer_id=customer.id,
+        status="Paid",
+        subtotal=80.0,
+        tax_total=11.98,
+        total=91.98,
+    )
     sent_invoice = Invoice(
         number="100124",
         date=datetime(2026, 2, 10),
@@ -84,6 +102,22 @@ def make_session():
         account_id=expense_account.id,
         notes="Monthly subscription",
     )
+    boundary_expense = Expense(
+        date=datetime(2026, 1, 31, 23, 59, 59),
+        description="Boundary expense",
+        amount=25.0,
+        tps=1.25,
+        tvq=2.49,
+        total=28.74,
+        account_id=expense_account.id,
+    )
+    after_period_expense = Expense(
+        date=datetime(2026, 2, 1, 0, 0, 0),
+        description="Future expense",
+        amount=30.0,
+        total=30.0,
+        account_id=expense_account.id,
+    )
     outside_expense = Expense(
         date=datetime(2025, 12, 1),
         description="Old expense",
@@ -91,7 +125,19 @@ def make_session():
         total=200.0,
         account_id=expense_account.id,
     )
-    session.add_all([paid_invoice, sent_invoice, outside_invoice, expense, outside_expense])
+    session.add_all(
+        [
+            paid_invoice,
+            boundary_invoice,
+            after_period_invoice,
+            sent_invoice,
+            outside_invoice,
+            expense,
+            boundary_expense,
+            after_period_expense,
+            outside_expense,
+        ]
+    )
     session.commit()
     for obj in [paid_invoice, sent_invoice, service]:
         session.refresh(obj)
@@ -124,16 +170,17 @@ def test_build_context_filters_invoices_expenses_and_customers_by_period():
         include_invoice_items=False,
     )
 
-    assert [row["invoice_number"] for row in context.invoices] == ["100123"]
-    assert [row["description"] for row in context.expenses] == ["Accounting software"]
+    assert [row["invoice_number"] for row in context.invoices] == ["100123", "100125"]
+    assert [row["description"] for row in context.expenses] == ["Accounting software", "Boundary expense"]
     assert [row["name"] for row in context.customers] == ["Cafe Parvis"]
     assert [row["code"] for row in context.accounts] == ["4000", "5000", "5100"]
+    assert [row["type"] for row in context.accounts] == ["Income", "Expense", "Expense"]
     assert context.invoice_items == []
-    assert context.summary["invoice_count"] == "1"
-    assert context.summary["paid_invoice_count"] == "1"
-    assert context.summary["paid_total"] == "689.85"
-    assert context.summary["expense_total"] == "114.98"
-    assert context.summary["net_before_taxes"] == "500.00"
+    assert context.summary["invoice_count"] == "2"
+    assert context.summary["paid_invoice_count"] == "2"
+    assert context.summary["paid_total"] == "747.34"
+    assert context.summary["expense_total"] == "143.72"
+    assert context.summary["net_before_taxes"] == "525.00"
 
 
 def test_context_includes_invoice_items_only_when_requested():
@@ -174,3 +221,7 @@ def test_rows_to_csv_text_writes_headers_and_decimal_strings():
     )
 
     assert parse_csv(csv_text) == [{"invoice_number": "100123", "total": "689.85"}]
+
+
+def test_money_uses_half_up_cent_rounding():
+    assert money(2.675) == "2.68"

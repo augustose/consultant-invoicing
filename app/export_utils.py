@@ -1,7 +1,8 @@
 import csv
 import io
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Iterable
 
 from sqlmodel import Session, select
@@ -29,7 +30,12 @@ class AccountantExportContext:
 
 
 def money(value: float | int | None) -> str:
-    return f"{float(value or 0):.2f}"
+    return str(
+        Decimal(str(value or 0)).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+    )
 
 
 def text(value) -> str:
@@ -84,7 +90,7 @@ def build_accountant_export_context(
     include_invoice_items: bool = False,
     generated_at: datetime | None = None,
 ) -> AccountantExportContext:
-    generated_at = generated_at or datetime.utcnow()
+    generated_at = generated_at or datetime.now(UTC)
     end_bound = inclusive_end(end_date)
     settings = session.exec(select(CompanySettings)).first()
     company = company_dict(settings)
