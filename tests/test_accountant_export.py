@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
+import pytest
 from sqlmodel import SQLModel, Session, create_engine, select
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
@@ -18,6 +19,7 @@ from export_utils import (  # noqa: E402
     create_accountant_csv_zip,
     money,
     rows_to_csv_text,
+    validate_export_range,
 )
 
 
@@ -431,3 +433,8 @@ def test_csv_zip_report_escapes_company_name_html(tmp_path):
 
     assert "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; Co" in html
     assert '<script>alert("x")</script> & Co' not in html
+
+
+def test_validate_export_range_rejects_end_before_start():
+    with pytest.raises(ValueError, match="End date must be on or after start date"):
+        validate_export_range(datetime(2026, 2, 1), datetime(2026, 1, 31))

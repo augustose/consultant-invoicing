@@ -5,6 +5,7 @@ from starlette.responses import HTMLResponse, Response
 from database import engine, Account, TaxRate, AccountType, Customer, Service, Invoice, InvoiceItem, RecurringProfile, CompanySettings, Expense
 from pdf_utils import build_invoice_pdf
 from template_utils import TemplateManager
+from export_utils import create_accountant_audit_xml, create_accountant_csv_zip, validate_export_range
 import log_config  # noqa: F401 — initializes logging on import
 from loguru import logger
 import os, json, csv
@@ -1044,9 +1045,117 @@ def reports_page():
         render_income_by_customer(cust_content, filtered)
         render_aged_receivables(aged_content, all_invoices)  # unfiltered: shows full AR exposure
 
+    def open_accountant_export_dialog():
+        export_state = {
+            'preset': state['preset'],
+            'from': state['from'],
+            'to': state['to'],
+        }
+        export_preset_btns = {}
+        format_options = {'csv_zip': 'CSV ZIP (recommended)', 'audit_xml': 'Audit XML'}
+
+        def range_text():
+            return f"{export_state['from'].strftime('%Y-%m-%d')} to {export_state['to'].strftime('%Y-%m-%d')}"
+
+        def update_export_buttons():
+            for name, btn in export_preset_btns.items():
+                btn.classes(replace='btn-primary h-9 rounded-lg px-4 text-sm' if name == export_state['preset']
+                            else 'h-9 rounded-lg px-4 text-sm bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300')
+
+        def set_export_preset(name):
+            export_state['preset'] = name
+            update_export_buttons()
+            if name != 'Custom':
+                d_from, d_to = PRESETS[name]
+                export_state['from'] = d_from
+                export_state['to'] = d_to
+                custom_export_row.set_visibility(False)
+                export_from_input.set_value(d_from.strftime('%Y-%m-%d'))
+                export_to_input.set_value(d_to.strftime('%Y-%m-%d'))
+                export_range_label.set_text(range_text())
+            else:
+                custom_export_row.set_visibility(True)
+
+        def apply_custom_export_range():
+            try:
+                d_from = datetime.strptime(export_from_input.value, '%Y-%m-%d')
+                d_to = datetime.strptime(export_to_input.value, '%Y-%m-%d')
+                validate_export_range(d_from, d_to)
+            except (TypeError, ValueError) as exc:
+                message = str(exc) if "End date must be on or after start date" in str(exc) else 'Invalid date format. Use YYYY-MM-DD'
+                ui.notify(message, color='red-500')
+                return
+            export_state['preset'] = 'Custom'
+            export_state['from'] = d_from
+            export_state['to'] = d_to
+            update_export_buttons()
+            export_range_label.set_text(range_text())
+
+        def export_for_accountant():
+            try:
+                validate_export_range(export_state['from'], export_state['to'])
+                with Session(engine) as session:
+                    if format_select.value == 'audit_xml':
+                        path = create_accountant_audit_xml(
+                            session,
+                            export_state['from'],
+                            export_state['to'],
+                            bool(include_items_check.value),
+                        )
+                    else:
+                        path = create_accountant_csv_zip(
+                            session,
+                            export_state['from'],
+                            export_state['to'],
+                            bool(include_items_check.value),
+                        )
+                ui.download(str(path))
+                ui.notify(f"Accountant export ready: {range_text()}", color='emerald-500')
+                dialog.close()
+            except ValueError as exc:
+                ui.notify(str(exc), color='red-500')
+            except Exception:
+                logger.exception("Error generating accountant export")
+                ui.notify('Error generating accountant export', color='red-500')
+
+        with ui.dialog() as dialog, ui.card().classes('p-8 w-[560px] max-w-[calc(100vw-2rem)] premium-card'):
+            with ui.row().classes('w-full items-start justify-between gap-4 mb-5'):
+                with ui.column().classes('gap-1'):
+                    ui.label('Export for Accountant').classes('text-2xl font-extrabold text-slate-900 dark:text-slate-100')
+                    ui.label('Choose a period and export format').classes('text-sm text-slate-400')
+                ui.button(icon='close', on_click=dialog.close).props('flat round dense').classes('text-slate-400')
+
+            ui.label('Period').classes('text-xs font-black text-slate-400 uppercase tracking-widest mb-2')
+            with ui.row().classes('items-center gap-2 flex-wrap mb-3'):
+                for name in PRESETS:
+                    is_active = name == export_state['preset']
+                    cls = 'btn-primary h-9 rounded-lg px-4 text-sm' if is_active else 'h-9 rounded-lg px-4 text-sm bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+                    btn = ui.button(name, on_click=lambda n=name: set_export_preset(n)).classes(cls)
+                    export_preset_btns[name] = btn
+
+            export_range_label = ui.label(range_text()).classes('text-sm text-slate-400 font-medium mb-3')
+
+            with ui.row().classes('items-center gap-4 mb-5') as custom_export_row:
+                custom_export_row.set_visibility(export_state['preset'] == 'Custom')
+                export_from_input = ui.input('From', value=export_state['from'].strftime('%Y-%m-%d')).props('dense outlined').classes('w-40')
+                export_to_input = ui.input('To', value=export_state['to'].strftime('%Y-%m-%d')).props('dense outlined').classes('w-40')
+                ui.button('Apply', on_click=apply_custom_export_range).classes('btn-primary h-9 rounded-lg px-5 text-sm')
+
+            format_select = ui.select(format_options, value='csv_zip', label='Format').props('dense outlined').classes('w-full mb-4')
+            include_items_check = ui.checkbox('Include invoice line-item details', value=False).classes('mb-6')
+
+            with ui.row().classes('w-full justify-end gap-3'):
+                ui.button('Cancel', on_click=dialog.close).classes('h-10 rounded-lg px-5 text-sm bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300')
+                ui.button('Export', icon='download', on_click=export_for_accountant).classes('btn-primary h-10 rounded-lg px-5 text-sm')
+
+        dialog.open()
+
     with ui.column().classes('w-full p-8 max-w-7xl mx-auto animate-fade-in'):
-        ui.label('Reports').classes('text-4xl font-extrabold text-slate-900 dark:text-slate-100 mb-2')
-        ui.label('Financial reports for any period').classes('text-slate-400 text-base mb-6')
+        with ui.row().classes('w-full items-center justify-between gap-4 mb-6'):
+            with ui.column().classes('gap-1'):
+                ui.label('Reports').classes('text-4xl font-extrabold text-slate-900 dark:text-slate-100')
+                ui.label('Financial reports for any period').classes('text-slate-400 text-base')
+            ui.button('Export for Accountant', icon='folder_zip', on_click=open_accountant_export_dialog).classes('btn-primary h-12 rounded-xl px-6')
 
         preset_btns = {}
 

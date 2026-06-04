@@ -484,6 +484,11 @@ def build_csv_files(context: AccountantExportContext) -> dict[str, str]:
     return files
 
 
+def validate_export_range(start_date: datetime, end_date: datetime) -> None:
+    if end_date < start_date:
+        raise ValueError("End date must be on or after start date")
+
+
 def create_accountant_csv_zip(
     session: Session,
     start_date: datetime,
