@@ -246,9 +246,23 @@ def test_invoice_period_bounds_support_report_style_presets():
     this_month = invoice_filter_period_bounds("This Month", today)
     last_month = invoice_filter_period_bounds("Last Month", today)
     this_year = invoice_filter_period_bounds("This Year", today)
+    last_year = invoice_filter_period_bounds("Last Year", today)
     all_time = invoice_filter_period_bounds("All Time", today)
 
     assert this_month == (datetime(2026, 6, 1), today)
     assert last_month == (datetime(2026, 5, 1), datetime(2026, 5, 31))
     assert this_year == (datetime(2026, 1, 1), today)
+    assert last_year == (
+        datetime(2025, 1, 1),
+        datetime(2025, 12, 31, 23, 59, 59, 999999),
+    )
     assert all_time == (None, None)
+
+
+def test_invoice_period_bounds_last_year_is_leap_day_safe():
+    last_year = invoice_filter_period_bounds("Last Year", datetime(2024, 2, 29, 12, 0, 0))
+
+    assert last_year == (
+        datetime(2023, 1, 1),
+        datetime(2023, 12, 31, 23, 59, 59, 999999),
+    )

@@ -55,8 +55,9 @@ def invoice_filter_period_bounds(period: str, today=None):
     first_this_year = today.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
     last_month_end = first_this_month - timedelta(days=1)
     last_month_start = last_month_end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    last_year_start = today.replace(year=today.year - 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-    last_year_end = today.replace(year=today.year - 1, month=12, day=31, hour=23, minute=59, second=59, microsecond=999999)
+    last_year = today.year - 1
+    last_year_start = datetime(last_year, 1, 1)
+    last_year_end = datetime(last_year, 12, 31, 23, 59, 59, 999999)
 
     if period == "This Month":
         return first_this_month, today
@@ -498,12 +499,8 @@ def invoices_page():
             filter_state['period'] = period
             custom_date_row.set_visibility(period == 'Custom')
             if period == 'Custom':
-                dates = parse_custom_invoice_dates()
-                if dates is None:
-                    return
-                filter_state['from'], filter_state['to'] = dates
-            else:
-                filter_state['from'], filter_state['to'] = invoice_filter_period_bounds(period, today)
+                return
+            filter_state['from'], filter_state['to'] = invoice_filter_period_bounds(period, today)
             refresh_invoice_table()
 
         def apply_custom_invoice_dates():
