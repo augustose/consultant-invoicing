@@ -30,12 +30,62 @@ def invoice_item_description(service) -> str:
     return service.name
 
 
+def can_cancel_invoice(status: str) -> bool:
+    return status == "Draft"
+
+
+def invoice_due_date(invoice):
+    return invoice.due_date or (invoice.date + timedelta(days=30))
+
+
+def invoice_display_status(invoice, today=None) -> str:
+    today = today or datetime.today()
+    if invoice.status == "Sent" and invoice_due_date(invoice).date() < today.date():
+        return "Overdue"
+    return invoice.status
+
+
+def can_mark_invoice_paid(status: str) -> bool:
+    return status in {"Sent", "Overdue"}
+
+
+def can_write_off_invoice(status: str) -> bool:
+    return status in {"Sent", "Overdue"}
+
+
+def invoice_list_columns(customer_label: str):
+    return [
+        {'name': 'num', 'label': '#', 'field': 'number', 'align': 'left'},
+        {'name': 'date', 'label': 'Date', 'field': 'date_fmt', 'align': 'left'},
+        {'name': 'cust', 'label': customer_label, 'field': 'cname', 'align': 'left'},
+        {'name': 'status', 'label': 'Status', 'field': 'status', 'align': 'center'},
+        {'name': 'total', 'label': 'Total', 'field': 'total_fmt', 'align': 'right'},
+        {'name': 'actions', 'label': '', 'field': 'id', 'align': 'right'},
+    ]
+
+
+def build_invoice_list_row(inv, customers, today=None):
+    display_status = invoice_display_status(inv, today=today)
+    return {
+        **inv.model_dump(),
+        'date_fmt': inv.date.strftime('%Y-%m-%d'),
+        'raw_status': inv.status,
+        'status': display_status,
+        'cname': next((c.name for c in customers if c.id == inv.customer_id), '?'),
+        'total_fmt': f'${inv.total:,.2f}',
+        'can_send': inv.status == 'Draft',
+        'can_cancel': can_cancel_invoice(inv.status),
+        'can_mark_paid': can_mark_invoice_paid(display_status),
+        'can_write_off': can_write_off_invoice(display_status),
+    }
+
+
 # --- i18n System ---
 TRANSLATIONS = {
     'en': {
         'dashboard': 'Dashboard', 'invoices': 'Invoices', 'recurring': 'Subscription',
         'customers': 'Customers', 'services': 'Services', 'accounts': 'Accounts',
-        'reports': 'Reports', 'expenses': 'Expenses', 'settings': 'Settings', 'welcome': 'Welcome back, Consultant',
+        'reports': 'Reports', 'expenses': 'Expenses', 'settings': 'Settings', 'help': 'Help', 'welcome': 'Welcome back, Consultant',
         'overdue': 'OVERDUE', 'draft': 'DRAFT / PENDING', 'paid': 'PAID (TOTAL)',
         'new_invoice': 'New Invoice', 'add_customer': 'Add Customer', 'add_service': 'Add Service',
         'mark_paid': 'Mark as Paid', 'download_pdf': 'Download PDF', 'preview': 'Preview',
@@ -48,7 +98,7 @@ TRANSLATIONS = {
     'es': {
         'dashboard': 'Tablero', 'invoices': 'Facturas', 'recurring': 'Suscripciones',
         'customers': 'Clientes', 'services': 'Servicios', 'accounts': 'Cuentas',
-        'reports': 'Reportes', 'expenses': 'Gastos', 'settings': 'Configuración', 'welcome': 'Bienvenido de nuevo, Consultor',
+        'reports': 'Reportes', 'expenses': 'Gastos', 'settings': 'Configuración', 'help': 'Ayuda', 'welcome': 'Bienvenido de nuevo, Consultor',
         'overdue': 'VENCIDO', 'draft': 'BORRADOR / PENDIENTE', 'paid': 'PAGADO (TOTAL)',
         'new_invoice': 'Nueva Factura', 'add_customer': 'Agregar Cliente', 'add_service': 'Agregar Servicio',
         'mark_paid': 'Marcar como Pagado', 'download_pdf': 'Descargar PDF', 'preview': 'Vista Previa',
@@ -103,6 +153,7 @@ def create_menu(active_path='/'):
                     ('/expenses', 'payments', 'Expenses'),
                     ('/reports', 'bar_chart', 'Reports'),
                     ('/settings', 'settings', 'Settings'),
+                    ('/help', 'help_outline', 'Help'),
                 ]
                 for path, icon, key in pages:
                     active = active_path == path
@@ -203,9 +254,52 @@ def mark_invoice_as_sent_action(iid):
     _update_invoice_status(iid, 'Sent', 'Invoice marked as Sent.', 'indigo-500')
 
 def mark_invoice_as_paid_action(iid):
+    try:
+        with Session(engine) as s:
+            inv = s.get(Invoice, iid)
+            if not inv:
+                ui.notify('Invoice not found', color='red-500')
+                return
+            if not can_mark_invoice_paid(invoice_display_status(inv)):
+                ui.notify('Only sent or overdue invoices can be marked paid.', color='amber-500')
+                return
+    except Exception as e:
+        logger.exception(f"Error validating invoice payment for ID={iid}")
+        ui.notify(f'Error: {e}', color='red-500')
+        return
     _update_invoice_status(iid, 'Paid', 'Payment registered!', 'emerald-500')
 
+
+def mark_invoice_as_written_off_action(iid):
+    try:
+        with Session(engine) as s:
+            inv = s.get(Invoice, iid)
+            if not inv:
+                ui.notify('Invoice not found', color='red-500')
+                return
+            if not can_write_off_invoice(invoice_display_status(inv)):
+                ui.notify('Only sent or overdue invoices can be written off.', color='amber-500')
+                return
+    except Exception as e:
+        logger.exception(f"Error validating invoice write-off for ID={iid}")
+        ui.notify(f'Error: {e}', color='red-500')
+        return
+    _update_invoice_status(iid, 'Written Off', 'Invoice written off.', 'amber-600')
+
 def mark_invoice_as_cancelled_action(iid):
+    try:
+        with Session(engine) as s:
+            inv = s.get(Invoice, iid)
+            if not inv:
+                ui.notify('Invoice not found', color='red-500')
+                return
+            if not can_cancel_invoice(inv.status):
+                ui.notify('Only draft invoices can be cancelled.', color='amber-500')
+                return
+    except Exception as e:
+        logger.exception(f"Error validating invoice cancellation for ID={iid}")
+        ui.notify(f'Error: {e}', color='red-500')
+        return
     _update_invoice_status(iid, 'Cancelled', 'Invoice cancelled.', 'red-500')
 
 # --- Pages ---
@@ -288,12 +382,12 @@ def invoices_page():
             ui.button(_('new_invoice'), icon='add_circle', on_click=dialog.open).classes('btn-primary px-8 h-14 rounded-2xl shadow-xl')
 
         with ui.card().classes('w-full p-0 overflow-hidden premium-card'):
-            cols = [{'name':'num','label':'#','field':'number','align':'left'},{'name':'cust','label':_('customers'),'field':'cname','align':'left'},{'name':'status','label':'Status','field':'status','align':'center'},{'name':'total','label':'Total','field':'total_fmt','align':'right'},{'name':'actions','label':'','field':'id','align':'right'}]
-            rows = [{**i.model_dump(), 'cname': next((c.name for c in customers if c.id == i.customer_id), '?'), 'total_fmt': f'${i.total:,.2f}'} for i in invoices]
+            cols = invoice_list_columns(_('customers'))
+            rows = [build_invoice_list_row(i, customers) for i in invoices]
             table = ui.table(columns=cols, rows=rows, row_key='id').classes('w-full border-none shadow-none')
-            table.add_slot('body-cell-status', '''<q-td :props="props"><q-badge :color="props.row.status === 'Paid' ? 'emerald-500' : (props.row.status === 'Sent' ? 'indigo-500' : (props.row.status === 'Cancelled' ? 'red-500' : 'amber-500'))" :style="{padding:'8px 16px',borderRadius:'100px',fontWeight:'700',fontSize:'10px'}">{{ props.row.status }}</q-badge></q-td>''')
-            table.add_slot('body-cell-actions', '''<q-td :props="props"><q-btn flat round icon="visibility" title="Preview" @click="$parent.$emit('preview', props.row.id)" /><q-btn flat round color="indigo-600" icon="file_download" title="Download PDF" @click="$parent.$emit('download', props.row.id)" /><q-btn v-if="props.row.status === 'Draft'" flat round color="indigo-400" icon="send" title="Mark as Sent" @click="$parent.$emit('sent', props.row.id)" /><q-btn v-if="props.row.status === 'Sent'" flat round color="emerald-500" icon="check" title="Mark as Paid" @click="$parent.$emit('paid', props.row.id)" /><q-btn v-if="props.row.status !== 'Paid' && props.row.status !== 'Cancelled'" flat round color="red-300" icon="cancel" title="Cancel invoice" @click="$parent.$emit('cancel', props.row.id)" /></q-td>''')
-            table.on('preview', lambda e: open_invoice_preview(e.args)); table.on('sent', lambda e: mark_invoice_as_sent_action(e.args)); table.on('paid', lambda e: mark_invoice_as_paid_action(e.args)); table.on('cancel', lambda e: mark_invoice_as_cancelled_action(e.args)); table.on('download', lambda e: ui.run_javascript(f'window.open("/download/{e.args}", "_blank")'))
+            table.add_slot('body-cell-status', '''<q-td :props="props"><q-badge :color="props.row.status === 'Paid' ? 'emerald-500' : (props.row.status === 'Sent' ? 'indigo-500' : (props.row.status === 'Overdue' ? 'orange-500' : (props.row.status === 'Written Off' ? 'slate-500' : (props.row.status === 'Cancelled' ? 'red-500' : 'amber-500'))))" :style="{padding:'8px 16px',borderRadius:'100px',fontWeight:'700',fontSize:'10px'}">{{ props.row.status }}</q-badge></q-td>''')
+            table.add_slot('body-cell-actions', '''<q-td :props="props"><q-btn flat round icon="visibility" title="Preview" @click="$parent.$emit('preview', props.row.id)" /><q-btn flat round color="indigo-600" icon="file_download" title="Download PDF" @click="$parent.$emit('download', props.row.id)" /><q-btn v-if="props.row.can_send" flat round color="indigo-400" icon="send" title="Mark as Sent" @click="$parent.$emit('sent', props.row.id)" /><q-btn v-if="props.row.can_mark_paid" flat round color="emerald-500" icon="check" title="Mark as Paid" @click="$parent.$emit('paid', props.row.id)" /><q-btn v-if="props.row.can_write_off" flat round color="amber-600" icon="money_off" title="Write off invoice" @click="$parent.$emit('writeoff', props.row.id)" /><q-btn v-if="props.row.can_cancel" flat round color="red-300" icon="cancel" title="Cancel draft invoice" @click="$parent.$emit('cancel', props.row.id)" /></q-td>''')
+            table.on('preview', lambda e: open_invoice_preview(e.args)); table.on('sent', lambda e: mark_invoice_as_sent_action(e.args)); table.on('paid', lambda e: mark_invoice_as_paid_action(e.args)); table.on('cancel', lambda e: mark_invoice_as_cancelled_action(e.args)); table.on('writeoff', lambda e: mark_invoice_as_written_off_action(e.args)); table.on('download', lambda e: ui.run_javascript(f'window.open("/download/{e.args}", "_blank")'))
 
 @ui.page('/')
 def dashboard_page():
@@ -1485,6 +1579,65 @@ def settings_page():
                     with ui.row().classes('gap-2'):
                         for t in tags:
                             ui.badge(t, color='indigo-100').classes('text-indigo-600 px-3 py-1 lowercase font-mono')
+
+
+@ui.page('/help')
+def help_page():
+    inject_premium_styles(); create_menu('/help')
+    with ui.column().classes('w-full p-8 max-w-5xl mx-auto animate-fade-in gap-8'):
+        with ui.column().classes('gap-2'):
+            ui.label('Help').classes('text-4xl font-extrabold text-slate-900 dark:text-slate-100 tracking-tight')
+            ui.label('Normal invoice workflow and exception handling.').classes('text-slate-500 text-lg')
+
+        with ui.column().classes('w-full gap-4'):
+            ui.label('Standard Workflow').classes('text-2xl font-bold text-slate-900 dark:text-slate-100')
+            with ui.row().classes('w-full gap-3 items-center flex-wrap'):
+                for label, color in [
+                    ('Draft', 'amber'),
+                    ('Sent', 'indigo'),
+                    ('Paid', 'emerald'),
+                ]:
+                    ui.badge(label, color=f'{color}-500').classes('px-4 py-2 text-sm font-bold')
+                    if label != 'Paid':
+                        ui.icon('arrow_forward', size='18px').classes('text-slate-400')
+            ui.label('Draft invoices can be edited, sent, or cancelled. Once an invoice is sent, it becomes part of your accounting trail and should not be deleted or cancelled. Paid invoices are locked.').classes('text-slate-600 dark:text-slate-300 leading-relaxed')
+
+        with ui.column().classes('w-full gap-4'):
+            ui.label('Exception Workflow').classes('text-2xl font-bold text-slate-900 dark:text-slate-100')
+            with ui.row().classes('w-full gap-3 items-center flex-wrap'):
+                for label, color in [
+                    ('Sent', 'indigo'),
+                    ('Overdue', 'orange'),
+                    ('Written Off', 'slate'),
+                ]:
+                    ui.badge(label, color=f'{color}-500').classes('px-4 py-2 text-sm font-bold')
+                    if label != 'Written Off':
+                        ui.icon('arrow_forward', size='18px').classes('text-slate-400')
+            ui.label('If a customer does not pay, keep the invoice open as Sent or Overdue while you follow up. If you decide it is uncollectible after recovery efforts, mark it as Written Off. Keep supporting documents for your accountant.').classes('text-slate-600 dark:text-slate-300 leading-relaxed')
+
+        with ui.column().classes('w-full gap-4'):
+            ui.label('Status Rules').classes('text-2xl font-bold text-slate-900 dark:text-slate-100')
+            rows = [
+                {'status': 'Draft', 'meaning': 'Not issued yet.', 'actions': 'Send, cancel.'},
+                {'status': 'Sent', 'meaning': 'Issued to the customer.', 'actions': 'Mark paid, write off if uncollectible.'},
+                {'status': 'Overdue', 'meaning': 'Sent invoice past its due date.', 'actions': 'Mark paid, write off if uncollectible.'},
+                {'status': 'Paid', 'meaning': 'Payment received.', 'actions': 'Locked.'},
+                {'status': 'Written Off', 'meaning': 'Unpaid amount abandoned after recovery efforts.', 'actions': 'Locked.'},
+                {'status': 'Cancelled', 'meaning': 'Draft abandoned before issue.', 'actions': 'Locked.'},
+            ]
+            ui.table(
+                columns=[
+                    {'name': 'status', 'label': 'Status', 'field': 'status', 'align': 'left'},
+                    {'name': 'meaning', 'label': 'Meaning', 'field': 'meaning', 'align': 'left'},
+                    {'name': 'actions', 'label': 'Available Actions', 'field': 'actions', 'align': 'left'},
+                ],
+                rows=rows,
+                row_key='status',
+            ).classes('w-full border-none shadow-none')
+
+        with ui.column().classes('w-full gap-3 border-t border-slate-200 dark:border-slate-700 pt-6'):
+            ui.label('Accounting note').classes('text-xl font-bold text-slate-900 dark:text-slate-100')
+            ui.label('For tax reporting, credit notes, and bad debt treatment, confirm the final accounting treatment with your accountant. The app protects the invoice trail, but it does not replace professional accounting advice.').classes('text-slate-600 dark:text-slate-300 leading-relaxed')
 
 def check_recurring():
     try:
