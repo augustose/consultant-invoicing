@@ -54,9 +54,14 @@ backups/
 examples/
 .claude/
 
-# Private / personal data — never commit
+# Private / personal data and local source material — never commit
 app.md
 docs/invoiceMetadata.md
+docs/private/
 
-# CodeSpring local config
+# Local agent/tooling config
+.agents/
+.superpowers/
 .codespring/
+skills-lock.json
+package-lock.json

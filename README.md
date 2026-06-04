@@ -11,11 +11,12 @@ A local-first invoicing and accounting app for independent consultants, built wi
 
 ## Features
 
-- **Invoicing** — Create, send, and track invoices through a clean workflow: Draft → Sent → Paid → Cancelled
+- **Invoicing** — Create, send, and track invoices through a clean workflow: Draft → Sent → Paid, with cancellation for drafts and write-off handling for uncollectible invoices
 - **Recurring billing** — Set up recurring invoice profiles that auto-generate on schedule
 - **CRM** — Manage clients, contacts, and billing addresses
 - **Services catalog** — Define your services with unit prices; auto-fill line items when creating invoices
 - **Chart of accounts** — Full double-entry account structure (Assets, Liabilities, Income, Expenses, Equity)
+- **Expense tracking** — Record business expenses by account, optional TPS/TVQ, period filters, and CSV export
 - **Reports** — Sales and tax reports (TPS/TVQ) for any custom date range or preset period
 - **HTML invoice templates** — Customizable Jinja2 templates; print to PDF directly from the browser
 - **Dashboard** — Monthly revenue chart, outstanding amounts, and recent invoice activity
@@ -91,6 +92,25 @@ uv run python app/main.py
 
 Then open **http://localhost:8081** in your browser.
 
+## Using the App
+
+The left sidebar is the main navigation for the local accounting workflow:
+
+| Option | Use it for | Main actions |
+|---|---|---|
+| **Dashboard** | Monitor the current state of the business. | Review paid, awaiting payment, draft totals, client count, monthly revenue, and recent invoices. |
+| **Invoices** | Create and manage customer invoices. | Add invoices from customers and services, preview them, download PDFs, mark sent, mark paid, write off, or cancel drafts. |
+| **Subscription** | Review recurring billing profiles. | See recurring customers and amounts; active profiles can generate draft recurring invoices when due. |
+| **Customers** | Maintain the client list used by invoices. | Add or edit customer names, emails, phone numbers, contact people, and addresses; delete customers only when they are not tied to invoices. |
+| **Services** | Manage the catalog of billable work. | Add services, set default descriptions and unit prices, edit existing services, toggle active status, and delete unused services. |
+| **Accounts** | Maintain the chart of accounts. | Add accounts, edit account names and descriptions, activate or deactivate non-system accounts, delete custom accounts, and export JSON data. |
+| **Expenses** | Track business spending against expense accounts. | Record date, description, account, amount, optional TPS/TVQ, and notes; filter by period and export expenses to CSV. |
+| **Reports** | Analyze invoices, taxes, customers, and receivables. | Use period presets or custom dates for sales summary, revenue trend, TPS/TVQ report, income by customer, and aged receivables. |
+| **Settings** | Configure company identity and invoice templates. | Update legal name, address, phone, email, GST/QST numbers, download the default template, upload custom HTML, or reset to default. |
+| **Help** | Find workflow explanations and status rules. | Review what each sidebar option does and how invoice states should be handled. |
+
+The sidebar footer also includes a language selector for English/Spanish labels and a dark mode toggle for the current browser session.
+
 ## Project Structure
 
 ```
@@ -104,7 +124,9 @@ consultant-invoicing/
 │   └── templates/
 │       └── invoice_default.html   # Default invoice HTML template
 ├── data/                    # SQLite DB + user data (gitignored)
-├── docs/                    # Architecture decisions, plans
+├── docs/
+│   ├── public/              # Sanitized docs safe for a public repository
+│   └── private/             # Local/private source material (gitignored)
 ├── manage.sh                # Dev management script (start/stop/logs)
 ├── pyproject.toml
 └── uv.lock
@@ -114,8 +136,11 @@ consultant-invoicing/
 
 ```
 Draft → Sent → Paid
-              ↘ Cancelled (from Draft or Sent)
+  └── Cancelled
+Sent/Overdue → Written Off
 ```
+
+Only Draft invoices can be cancelled. Sent invoices can be marked Paid or Written Off. Overdue is displayed for Sent invoices after their due date.
 
 ## Tax Configuration
 
@@ -157,8 +182,10 @@ Logs are written to `logs/app.log` and `logs/errors.log`.
 - [x] Custom HTML invoice templates
 - [x] Sales & tax reports with date ranges
 - [x] Dashboard with revenue chart
-- [ ] Data export (CSV/JSON) for accountant
-- [ ] Multi-language UI (EN/ES)
+- [x] Expense tracking with CSV export
+- [x] Public/private documentation split
+- [ ] Full data import/export workflow for accountant handoff
+- [ ] Expanded multi-language UI coverage (EN/ES)
 - [ ] LLM integration for voice/natural language invoice creation
 
 ## License

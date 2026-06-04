@@ -1584,10 +1584,78 @@ def settings_page():
 @ui.page('/help')
 def help_page():
     inject_premium_styles(); create_menu('/help')
-    with ui.column().classes('w-full p-8 max-w-5xl mx-auto animate-fade-in gap-8'):
+    with ui.column().classes('w-full p-8 max-w-6xl mx-auto animate-fade-in gap-8'):
         with ui.column().classes('gap-2'):
             ui.label('Help').classes('text-4xl font-extrabold text-slate-900 dark:text-slate-100 tracking-tight')
-            ui.label('Normal invoice workflow and exception handling.').classes('text-slate-500 text-lg')
+            ui.label('A practical guide to the main options in Accounting AI.').classes('text-slate-500 text-lg')
+
+        with ui.column().classes('w-full gap-4'):
+            ui.label('Navigation Guide').classes('text-2xl font-bold text-slate-900 dark:text-slate-100')
+            rows = [
+                {
+                    'option': 'Dashboard',
+                    'purpose': 'Monitor the current state of the business.',
+                    'actions': 'Review paid, awaiting payment, draft totals, client count, monthly revenue, and recent invoices.',
+                },
+                {
+                    'option': 'Invoices',
+                    'purpose': 'Create and manage customer invoices.',
+                    'actions': 'Add invoices from customers and services, preview them, download PDFs, mark sent, mark paid, write off, or cancel drafts.',
+                },
+                {
+                    'option': 'Subscription',
+                    'purpose': 'Review recurring billing profiles.',
+                    'actions': 'See recurring customers and amounts; active profiles can generate draft recurring invoices when due.',
+                },
+                {
+                    'option': 'Customers',
+                    'purpose': 'Maintain the client list used by invoices.',
+                    'actions': 'Add or edit customer names, emails, phone numbers, contact people, and addresses; delete customers only when they are not tied to invoices.',
+                },
+                {
+                    'option': 'Services',
+                    'purpose': 'Manage the catalog of billable work.',
+                    'actions': 'Add services, set default descriptions and unit prices, edit existing services, toggle active status, and delete unused services.',
+                },
+                {
+                    'option': 'Accounts',
+                    'purpose': 'Maintain the chart of accounts.',
+                    'actions': 'Add accounts, edit account names and descriptions, activate or deactivate non-system accounts, delete custom accounts, and export JSON data.',
+                },
+                {
+                    'option': 'Expenses',
+                    'purpose': 'Track business spending against expense accounts.',
+                    'actions': 'Record date, description, account, amount, optional TPS/TVQ, and notes; filter by period and export expenses to CSV.',
+                },
+                {
+                    'option': 'Reports',
+                    'purpose': 'Analyze invoices, taxes, customers, and receivables.',
+                    'actions': 'Use period presets or custom dates for sales summary, revenue trend, TPS/TVQ report, income by customer, and aged receivables.',
+                },
+                {
+                    'option': 'Settings',
+                    'purpose': 'Configure company identity and invoice templates.',
+                    'actions': 'Update legal name, address, phone, email, GST/QST numbers, download the default template, upload custom HTML, or reset to default.',
+                },
+                {
+                    'option': 'Help',
+                    'purpose': 'Find workflow explanations and status rules.',
+                    'actions': 'Review what each sidebar option does and how invoice states should be handled.',
+                },
+            ]
+            ui.table(
+                columns=[
+                    {'name': 'option', 'label': 'Option', 'field': 'option', 'align': 'left'},
+                    {'name': 'purpose', 'label': 'Use It For', 'field': 'purpose', 'align': 'left'},
+                    {'name': 'actions', 'label': 'Main Actions', 'field': 'actions', 'align': 'left'},
+                ],
+                rows=rows,
+                row_key='option',
+            ).classes('w-full border-none shadow-none')
+
+        with ui.column().classes('w-full gap-3 border-t border-slate-200 dark:border-slate-700 pt-6'):
+            ui.label('Sidebar Controls').classes('text-xl font-bold text-slate-900 dark:text-slate-100')
+            ui.label('Use the language selector at the bottom of the sidebar to switch between English and Spanish labels. Use the dark mode control to switch the interface theme for your current browser session.').classes('text-slate-600 dark:text-slate-300 leading-relaxed')
 
         with ui.column().classes('w-full gap-4'):
             ui.label('Standard Workflow').classes('text-2xl font-bold text-slate-900 dark:text-slate-100')
@@ -1600,7 +1668,7 @@ def help_page():
                     ui.badge(label, color=f'{color}-500').classes('px-4 py-2 text-sm font-bold')
                     if label != 'Paid':
                         ui.icon('arrow_forward', size='18px').classes('text-slate-400')
-            ui.label('Draft invoices can be edited, sent, or cancelled. Once an invoice is sent, it becomes part of your accounting trail and should not be deleted or cancelled. Paid invoices are locked.').classes('text-slate-600 dark:text-slate-300 leading-relaxed')
+            ui.label('Draft invoices can be reviewed, sent, or cancelled. Once an invoice is sent, it becomes part of your accounting trail and should not be deleted or cancelled. Paid invoices are locked.').classes('text-slate-600 dark:text-slate-300 leading-relaxed')
 
         with ui.column().classes('w-full gap-4'):
             ui.label('Exception Workflow').classes('text-2xl font-bold text-slate-900 dark:text-slate-100')
