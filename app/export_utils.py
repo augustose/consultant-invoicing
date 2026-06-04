@@ -3,6 +3,7 @@ import html
 import io
 import json
 import zipfile
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, ROUND_HALF_UP
@@ -115,6 +116,60 @@ def rows_to_csv_text(headers: list[str], rows: Iterable[dict[str, str]]) -> str:
     for row in rows:
         writer.writerow(row)
     return output.getvalue()
+
+
+def add_mapping(parent: ET.Element, tag: str, values: dict[str, str]) -> ET.Element:
+    element = ET.SubElement(parent, tag)
+    for key, value in values.items():
+        child = ET.SubElement(element, key)
+        child.text = text(value)
+    return element
+
+
+def add_text(parent: ET.Element, tag: str, value: str) -> ET.Element:
+    child = ET.SubElement(parent, tag)
+    child.text = text(value)
+    return child
+
+
+def render_audit_xml(context: AccountantExportContext) -> bytes:
+    root = ET.Element("accountant_export")
+    metadata = ET.SubElement(root, "metadata")
+    add_text(metadata, "format", "audit_xml")
+    add_text(metadata, "generated_at", context.summary["generated_at"])
+    add_text(metadata, "currency", context.summary["currency"])
+    add_text(metadata, "include_invoice_items", "true" if context.include_invoice_items else "false")
+
+    company = ET.SubElement(root, "company")
+    for key, value in context.company.items():
+        add_text(company, key, value)
+
+    period = ET.SubElement(root, "period")
+    add_text(period, "start_date", context.summary["period_start"])
+    add_text(period, "end_date", context.summary["period_end"])
+
+    add_mapping(root, "summary", context.summary)
+    accounts = ET.SubElement(root, "chart_of_accounts")
+    for account in context.accounts:
+        add_mapping(accounts, "account", account)
+    customers = ET.SubElement(root, "customers")
+    for customer in context.customers:
+        add_mapping(customers, "customer", customer)
+    invoices = ET.SubElement(root, "invoices")
+    for invoice in context.invoices:
+        add_mapping(invoices, "invoice", invoice)
+    invoice_items = ET.SubElement(root, "invoice_items")
+    for item in context.invoice_items:
+        add_mapping(invoice_items, "invoice_item", item)
+    expenses = ET.SubElement(root, "expenses")
+    for expense in context.expenses:
+        add_mapping(expenses, "expense", expense)
+    tax_summary = ET.SubElement(root, "tax_summary")
+    for tax in context.tax_report:
+        add_mapping(tax_summary, "tax", tax)
+
+    ET.indent(root, space="  ")
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
 def inclusive_end(end_date: datetime) -> datetime:
@@ -464,3 +519,18 @@ def create_accountant_csv_zip(
         archive.writestr("manifest.json", json.dumps(manifest, indent=2))
 
     return zip_path
+
+
+def create_accountant_audit_xml(
+    session: Session,
+    start_date: datetime,
+    end_date: datetime,
+    include_invoice_items: bool = False,
+    export_dir: str | Path = "data/exports",
+) -> Path:
+    context = build_accountant_export_context(session, start_date, end_date, include_invoice_items)
+    export_path = Path(export_dir)
+    export_path.mkdir(parents=True, exist_ok=True)
+    xml_path = export_path / export_filename("accountant_audit", start_date, end_date, "xml")
+    xml_path.write_bytes(render_audit_xml(context))
+    return xml_path
