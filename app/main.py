@@ -13,6 +13,9 @@ import plotly.graph_objects as go
 from collections import defaultdict
 
 LAST_EXTERNAL_INVOICE_NUMBER = 100122
+INVOICE_STATUS_FILTERS = ["All", "Draft", "Sent", "Overdue", "Paid", "Written Off", "Cancelled"]
+INVOICE_PERIOD_FILTERS = ["All Time", "This Month", "Last Month", "This Year", "Last Year", "Custom"]
+INVOICE_SORT_OPTIONS = ["Date newest", "Date oldest", "Total high", "Total low", "Customer A-Z", "Invoice #"]
 
 
 def next_invoice_number(invoices) -> str:
@@ -44,6 +47,26 @@ def invoice_display_status(invoice, today=None) -> str:
     if invoice.status == "Sent" and invoice_due_date(invoice).date() < today.date():
         return "Overdue"
     return invoice.status
+
+
+def invoice_filter_period_bounds(period: str, today=None):
+    today = today or datetime.today()
+    first_this_month = today.replace(day=1)
+    first_this_year = today.replace(month=1, day=1)
+    last_month_end = first_this_month - timedelta(days=1)
+    last_month_start = last_month_end.replace(day=1)
+    last_year_start = today.replace(year=today.year - 1, month=1, day=1)
+    last_year_end = today.replace(year=today.year - 1, month=12, day=31)
+
+    if period == "This Month":
+        return first_this_month, today
+    if period == "Last Month":
+        return last_month_start, last_month_end
+    if period == "This Year":
+        return first_this_year, today
+    if period == "Last Year":
+        return last_year_start, last_year_end
+    return None, None
 
 
 def can_mark_invoice_paid(status: str) -> bool:
@@ -79,6 +102,49 @@ def build_invoice_list_row(inv, customers, today=None):
         'can_mark_paid': can_mark_invoice_paid(display_status),
         'can_write_off': can_write_off_invoice(display_status),
     }
+
+
+def filter_and_sort_invoice_rows(rows, filters):
+    query = str(filters.get("query") or "").strip().lower()
+    status = filters.get("status") or "All"
+    customer_id = filters.get("customer_id")
+    d_from = filters.get("from")
+    d_to = filters.get("to")
+    sort = filters.get("sort") or "Date newest"
+
+    filtered = list(rows)
+
+    if query:
+        filtered = [
+            row for row in filtered
+            if query in str(row.get("number", "")).lower()
+            or query in str(row.get("cname", "")).lower()
+        ]
+
+    if status and status != "All":
+        filtered = [row for row in filtered if row.get("status") == status]
+
+    if customer_id not in (None, "All"):
+        filtered = [row for row in filtered if row.get("customer_id") == customer_id]
+
+    if d_from is not None:
+        filtered = [row for row in filtered if row.get("date") and row["date"] >= d_from]
+
+    if d_to is not None:
+        end_bound = d_to.replace(hour=23, minute=59, second=59)
+        filtered = [row for row in filtered if row.get("date") and row["date"] <= end_bound]
+
+    if sort == "Date oldest":
+        return sorted(filtered, key=lambda row: row.get("date") or datetime.min)
+    if sort == "Total high":
+        return sorted(filtered, key=lambda row: row.get("total") or 0, reverse=True)
+    if sort == "Total low":
+        return sorted(filtered, key=lambda row: row.get("total") or 0)
+    if sort == "Customer A-Z":
+        return sorted(filtered, key=lambda row: str(row.get("cname") or "").lower())
+    if sort == "Invoice #":
+        return sorted(filtered, key=lambda row: str(row.get("number") or ""))
+    return sorted(filtered, key=lambda row: row.get("date") or datetime.min, reverse=True)
 
 
 # --- i18n System ---
