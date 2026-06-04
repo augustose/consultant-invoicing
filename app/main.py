@@ -1076,11 +1076,15 @@ def reports_page():
             else:
                 custom_export_row.set_visibility(True)
 
+        def parse_custom_export_range():
+            d_from = datetime.strptime(export_from_input.value, '%Y-%m-%d')
+            d_to = datetime.strptime(export_to_input.value, '%Y-%m-%d')
+            validate_export_range(d_from, d_to)
+            return d_from, d_to
+
         def apply_custom_export_range():
             try:
-                d_from = datetime.strptime(export_from_input.value, '%Y-%m-%d')
-                d_to = datetime.strptime(export_to_input.value, '%Y-%m-%d')
-                validate_export_range(d_from, d_to)
+                d_from, d_to = parse_custom_export_range()
             except (TypeError, ValueError) as exc:
                 message = str(exc) if "End date must be on or after start date" in str(exc) else 'Invalid date format. Use YYYY-MM-DD'
                 ui.notify(message, color='red-500')
@@ -1093,6 +1097,11 @@ def reports_page():
 
         def export_for_accountant():
             try:
+                if export_state['preset'] == 'Custom':
+                    d_from, d_to = parse_custom_export_range()
+                    export_state['from'] = d_from
+                    export_state['to'] = d_to
+                    export_range_label.set_text(range_text())
                 validate_export_range(export_state['from'], export_state['to'])
                 with Session(engine) as session:
                     if format_select.value == 'audit_xml':
