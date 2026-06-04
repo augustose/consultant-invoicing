@@ -413,6 +413,33 @@ def test_csv_zip_neutralizes_formula_like_text_cells(tmp_path):
     assert invoice_items[0]["line_total"] == "600.00"
 
 
+def test_audit_xml_preserves_formula_like_text_without_csv_prefix(tmp_path):
+    session = make_session()
+    customer = session.exec(select(Customer).where(Customer.name == "Cafe Parvis")).one()
+    invoice = session.exec(select(Invoice).where(Invoice.number == "100123")).one()
+    expense = session.exec(select(Expense).where(Expense.description == "Accounting software")).one()
+
+    customer.name = '=HYPERLINK("http://bad")'
+    invoice.notes = "@cmd"
+    expense.description = "+SUM(1,2)"
+    session.add_all([customer, invoice, expense])
+    session.commit()
+
+    xml_path = create_accountant_audit_xml(
+        session=session,
+        start_date=datetime(2026, 1, 1),
+        end_date=datetime(2026, 1, 31),
+        include_invoice_items=False,
+        export_dir=tmp_path,
+    )
+    root = ET.parse(xml_path).getroot()
+
+    assert root.findtext("customers/customer/name") == '=HYPERLINK("http://bad")'
+    assert root.findtext("invoices/invoice/customer_name") == '=HYPERLINK("http://bad")'
+    assert root.findtext("invoices/invoice/notes") == "@cmd"
+    assert root.findtext("expenses/expense/description") == "+SUM(1,2)"
+
+
 def test_csv_zip_report_escapes_company_name_html(tmp_path):
     session = make_session()
     settings = session.exec(select(CompanySettings)).one()
@@ -435,6 +462,52 @@ def test_csv_zip_report_escapes_company_name_html(tmp_path):
     assert '<script>alert("x")</script> & Co' not in html
 
 
+def test_csv_zip_report_includes_timestamp_counts_tax_and_csv_note(tmp_path):
+    session = make_session()
+
+    zip_path = create_accountant_csv_zip(
+        session=session,
+        start_date=datetime(2026, 1, 1),
+        end_date=datetime(2026, 1, 31),
+        include_invoice_items=False,
+        export_dir=tmp_path,
+    )
+
+    with zipfile.ZipFile(zip_path) as archive:
+        html = archive.read("accountant_report.html").decode("utf-8")
+
+    assert "Generated" in html
+    assert "Invoices" in html
+    assert "Paid invoices" in html
+    assert "Expenses" in html
+    assert "Customers" in html
+    assert "Accounts" in html
+    assert "TPS collected from paid invoices" in html
+    assert "TVQ collected from paid invoices" in html
+    assert "CSV files are the primary accountant-friendly interchange format" in html
+
+
 def test_validate_export_range_rejects_end_before_start():
     with pytest.raises(ValueError, match="End date must be on or after start date"):
         validate_export_range(datetime(2026, 2, 1), datetime(2026, 1, 31))
+
+
+def test_export_entrypoints_reject_end_before_start_without_creating_files(tmp_path):
+    session = make_session()
+
+    with pytest.raises(ValueError, match="End date must be on or after start date"):
+        create_accountant_csv_zip(
+            session=session,
+            start_date=datetime(2026, 2, 1),
+            end_date=datetime(2026, 1, 31),
+            export_dir=tmp_path,
+        )
+    with pytest.raises(ValueError, match="End date must be on or after start date"):
+        create_accountant_audit_xml(
+            session=session,
+            start_date=datetime(2026, 2, 1),
+            end_date=datetime(2026, 1, 31),
+            export_dir=tmp_path,
+        )
+
+    assert list(tmp_path.iterdir()) == []

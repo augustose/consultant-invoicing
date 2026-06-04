@@ -68,6 +68,14 @@ INVOICE_ITEM_HEADERS = [
     "line_total",
 ]
 
+SUMMARY_TEXT_FIELDS = {"currency"}
+INVOICE_TEXT_FIELDS = {"invoice_number", "customer_name", "customer_email", "status", "notes"}
+EXPENSE_TEXT_FIELDS = {"description", "account_code", "account_name", "notes"}
+TAX_TEXT_FIELDS = {"metric"}
+CUSTOMER_TEXT_FIELDS = {"name", "contact", "email", "phone", "address", "currency"}
+ACCOUNT_TEXT_FIELDS = {"code", "name", "type", "description"}
+INVOICE_ITEM_TEXT_FIELDS = {"invoice_number", "customer_name", "service_id", "description"}
+
 
 @dataclass
 class AccountantExportContext:
@@ -116,6 +124,13 @@ def rows_to_csv_text(headers: list[str], rows: Iterable[dict[str, str]]) -> str:
     for row in rows:
         writer.writerow(row)
     return output.getvalue()
+
+
+def csv_safe_rows(rows: Iterable[dict[str, str]], text_fields: set[str]) -> list[dict[str, str]]:
+    return [
+        {key: safe_csv_text(value) if key in text_fields else value for key, value in row.items()}
+        for row in rows
+    ]
 
 
 def add_mapping(parent: ET.Element, tag: str, values: dict[str, str]) -> ET.Element:
@@ -240,18 +255,18 @@ def build_accountant_export_context(
         customer = customer_map.get(invoice.customer_id)
         invoice_rows.append(
             {
-                "invoice_number": safe_csv_text(invoice.number),
+                "invoice_number": text(invoice.number),
                 "invoice_date": day(invoice.date),
                 "due_date": day(invoice.due_date),
-                "customer_name": safe_csv_text(customer.name if customer else ""),
-                "customer_email": safe_csv_text(customer.email if customer else ""),
-                "status": safe_csv_text(invoice.status),
+                "customer_name": text(customer.name if customer else ""),
+                "customer_email": text(customer.email if customer else ""),
+                "status": text(invoice.status),
                 "subtotal": money(invoice.subtotal),
                 "tps": money(invoice.subtotal * TPS_RATE),
                 "tvq": money(invoice.subtotal * TVQ_RATE),
                 "tax_total": money(invoice.tax_total),
                 "total": money(invoice.total),
-                "notes": safe_csv_text(invoice.notes),
+                "notes": text(invoice.notes),
             }
         )
 
@@ -261,35 +276,35 @@ def build_accountant_export_context(
         expense_rows.append(
             {
                 "date": day(expense.date),
-                "description": safe_csv_text(expense.description),
-                "account_code": safe_csv_text(account.code if account else ""),
-                "account_name": safe_csv_text(account.name if account else ""),
+                "description": text(expense.description),
+                "account_code": text(account.code if account else ""),
+                "account_name": text(account.name if account else ""),
                 "subtotal": money(expense.amount),
                 "tps": money(expense.tps),
                 "tvq": money(expense.tvq),
                 "total": money(expense.total),
-                "notes": safe_csv_text(expense.notes),
+                "notes": text(expense.notes),
             }
         )
 
     used_customers = [customer for customer in customers if customer.id in customer_ids]
     customer_rows = [
         {
-            "name": safe_csv_text(customer.name),
-            "contact": safe_csv_text(customer.contact),
-            "email": safe_csv_text(customer.email),
-            "phone": safe_csv_text(customer.phone),
-            "address": safe_csv_text(customer.address),
-            "currency": safe_csv_text(customer.currency),
+            "name": text(customer.name),
+            "contact": text(customer.contact),
+            "email": text(customer.email),
+            "phone": text(customer.phone),
+            "address": text(customer.address),
+            "currency": text(customer.currency),
         }
         for customer in used_customers
     ]
     account_rows = [
         {
-            "code": safe_csv_text(account.code),
-            "name": safe_csv_text(account.name),
-            "type": safe_csv_text(account.type.value if hasattr(account.type, "value") else account.type),
-            "description": safe_csv_text(account.description),
+            "code": text(account.code),
+            "name": text(account.name),
+            "type": text(account.type.value if hasattr(account.type, "value") else account.type),
+            "description": text(account.description),
             "is_active": "true" if account.is_active else "false",
             "is_system": "true" if account.is_system else "false",
         }
@@ -309,11 +324,11 @@ def build_accountant_export_context(
             customer = customer_map.get(invoice.customer_id) if invoice else None
             item_rows.append(
                 {
-                    "invoice_number": safe_csv_text(invoice.number if invoice else ""),
+                    "invoice_number": text(invoice.number if invoice else ""),
                     "invoice_date": day(invoice.date if invoice else None),
-                    "customer_name": safe_csv_text(customer.name if customer else ""),
-                    "service_id": safe_csv_text(item.service_id),
-                    "description": safe_csv_text(item.description),
+                    "customer_name": text(customer.name if customer else ""),
+                    "service_id": text(item.service_id),
+                    "description": text(item.description),
                     "quantity": money(item.quantity),
                     "unit_price": money(item.unit_price),
                     "line_total": money(item.total),
@@ -324,7 +339,7 @@ def build_accountant_export_context(
         "period_start": day(start_date),
         "period_end": day(end_date),
         "generated_at": generated_at.isoformat(timespec="seconds"),
-        "currency": safe_csv_text(company["currency"] or "CAD"),
+        "currency": text(company["currency"] or "CAD"),
         "invoice_count": str(len(invoices)),
         "paid_invoice_count": str(len(paid_invoices)),
         "sent_invoice_count": str(len([invoice for invoice in invoices if invoice.status == "Sent"])),
@@ -413,6 +428,24 @@ def render_accountant_html_report(context: AccountantExportContext, files: list[
             metric_card("Net before taxes", context.summary["net_before_taxes"], currency),
         ]
     )
+    count_cards = "\n".join(
+        [
+            metric_card("Invoices", context.summary["invoice_count"], ""),
+            metric_card("Paid invoices", context.summary["paid_invoice_count"], ""),
+            metric_card("Expenses", context.summary["expense_count"], ""),
+            metric_card("Customers", str(len(context.customers)), ""),
+            metric_card("Accounts", str(len(context.accounts)), ""),
+        ]
+    )
+    tax_rows = "\n".join(
+        f"""
+          <tr class="border-t border-slate-200">
+            <td class="py-2 pr-4 text-sm text-slate-700">{html.escape(row["metric"])}</td>
+            <td class="py-2 text-right font-mono text-sm text-slate-700">{html.escape(row["amount"])}</td>
+          </tr>
+        """
+        for row in context.tax_report
+    )
     file_rows = "\n".join(
         f"""
           <tr class="border-t border-slate-200">
@@ -444,12 +477,24 @@ def render_accountant_html_report(context: AccountantExportContext, files: list[
         <p class="text-sm font-medium uppercase tracking-wide text-slate-500">Accountant export</p>
         <h1 class="mt-2 text-3xl font-semibold">{company_name}</h1>
         <p class="mt-2 text-slate-600">{escaped_period}</p>
+        <p class="mt-1 text-sm text-slate-500">Generated {html.escape(context.summary["generated_at"])}</p>
       </header>
 
       {empty_note}
 
       <section class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {cards}
+      </section>
+
+      <section class="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        {count_cards}
+      </section>
+
+      <section class="mt-8 rounded border border-slate-200 bg-white p-5">
+        <h2 class="text-lg font-semibold">Tax summary</h2>
+        <table class="mt-4 w-full border-collapse text-left">
+          <tbody>{tax_rows}</tbody>
+        </table>
       </section>
 
       <section class="mt-8 rounded border border-slate-200 bg-white p-5">
@@ -463,6 +508,9 @@ def render_accountant_html_report(context: AccountantExportContext, files: list[
           </thead>
           <tbody>{file_rows}</tbody>
         </table>
+        <p class="mt-4 text-sm text-slate-500">
+          CSV files are the primary accountant-friendly interchange format. They may be imported or reviewed manually depending on the accountant's software.
+        </p>
       </section>
     </main>
   </body>
@@ -472,15 +520,21 @@ def render_accountant_html_report(context: AccountantExportContext, files: list[
 
 def build_csv_files(context: AccountantExportContext) -> dict[str, str]:
     files = {
-        "summary.csv": rows_to_csv_text(SUMMARY_HEADERS, [context.summary]),
-        "invoices.csv": rows_to_csv_text(INVOICE_HEADERS, context.invoices),
-        "expenses.csv": rows_to_csv_text(EXPENSE_HEADERS, context.expenses),
-        "tax_report.csv": rows_to_csv_text(TAX_HEADERS, context.tax_report),
-        "customers.csv": rows_to_csv_text(CUSTOMER_HEADERS, context.customers),
-        "chart_of_accounts.csv": rows_to_csv_text(ACCOUNT_HEADERS, context.accounts),
+        "summary.csv": rows_to_csv_text(SUMMARY_HEADERS, csv_safe_rows([context.summary], SUMMARY_TEXT_FIELDS)),
+        "invoices.csv": rows_to_csv_text(INVOICE_HEADERS, csv_safe_rows(context.invoices, INVOICE_TEXT_FIELDS)),
+        "expenses.csv": rows_to_csv_text(EXPENSE_HEADERS, csv_safe_rows(context.expenses, EXPENSE_TEXT_FIELDS)),
+        "tax_report.csv": rows_to_csv_text(TAX_HEADERS, csv_safe_rows(context.tax_report, TAX_TEXT_FIELDS)),
+        "customers.csv": rows_to_csv_text(CUSTOMER_HEADERS, csv_safe_rows(context.customers, CUSTOMER_TEXT_FIELDS)),
+        "chart_of_accounts.csv": rows_to_csv_text(
+            ACCOUNT_HEADERS,
+            csv_safe_rows(context.accounts, ACCOUNT_TEXT_FIELDS),
+        ),
     }
     if context.include_invoice_items:
-        files["invoice_items.csv"] = rows_to_csv_text(INVOICE_ITEM_HEADERS, context.invoice_items)
+        files["invoice_items.csv"] = rows_to_csv_text(
+            INVOICE_ITEM_HEADERS,
+            csv_safe_rows(context.invoice_items, INVOICE_ITEM_TEXT_FIELDS),
+        )
     return files
 
 
@@ -496,6 +550,7 @@ def create_accountant_csv_zip(
     include_invoice_items: bool = False,
     export_dir: str | Path = "data/exports",
 ) -> Path:
+    validate_export_range(start_date, end_date)
     context = build_accountant_export_context(
         session=session,
         start_date=start_date,
@@ -533,6 +588,7 @@ def create_accountant_audit_xml(
     include_invoice_items: bool = False,
     export_dir: str | Path = "data/exports",
 ) -> Path:
+    validate_export_range(start_date, end_date)
     context = build_accountant_export_context(session, start_date, end_date, include_invoice_items)
     export_path = Path(export_dir)
     export_path.mkdir(parents=True, exist_ok=True)
