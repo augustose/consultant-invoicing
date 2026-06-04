@@ -167,7 +167,7 @@ def test_invoice_filter_defaults_sort_by_date_newest():
         invoice_row(id=2, number="100124", date=datetime(2026, 6, 1)),
     ]
 
-    result = filter_and_sort_invoice_rows(rows, {"sort": "Date newest"})
+    result = filter_and_sort_invoice_rows(rows, {})
 
     assert [row["number"] for row in result] == ["100124", "100123"]
 
