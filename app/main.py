@@ -374,6 +374,7 @@ def mark_invoice_as_cancelled_action(iid):
 def invoices_page():
     logger.debug("Cargando página: /invoices")
     inject_premium_styles(); create_menu('/invoices')
+    today = datetime.today()
     with Session(engine) as session:
         customers = session.exec(select(Customer)).all(); services = session.exec(select(Service)).all(); invoices = session.exec(select(Invoice)).all()
     
@@ -448,13 +449,112 @@ def invoices_page():
                     ui.button('Save Invoice', on_click=save).classes('btn-primary px-10 h-14 rounded-2xl')
             ui.button(_('new_invoice'), icon='add_circle', on_click=dialog.open).classes('btn-primary px-8 h-14 rounded-2xl shadow-xl')
 
-        with ui.card().classes('w-full p-0 overflow-hidden premium-card'):
-            cols = invoice_list_columns(_('customers'))
-            rows = [build_invoice_list_row(i, customers) for i in invoices]
-            table = ui.table(columns=cols, rows=rows, row_key='id').classes('w-full border-none shadow-none')
-            table.add_slot('body-cell-status', '''<q-td :props="props"><q-badge :color="props.row.status === 'Paid' ? 'emerald-500' : (props.row.status === 'Sent' ? 'indigo-500' : (props.row.status === 'Overdue' ? 'orange-500' : (props.row.status === 'Written Off' ? 'slate-500' : (props.row.status === 'Cancelled' ? 'red-500' : 'amber-500'))))" :style="{padding:'8px 16px',borderRadius:'100px',fontWeight:'700',fontSize:'10px'}">{{ props.row.status }}</q-badge></q-td>''')
-            table.add_slot('body-cell-actions', '''<q-td :props="props"><q-btn flat round icon="visibility" title="Preview" @click="$parent.$emit('preview', props.row.id)" /><q-btn flat round color="indigo-600" icon="file_download" title="Download PDF" @click="$parent.$emit('download', props.row.id)" /><q-btn v-if="props.row.can_send" flat round color="indigo-400" icon="send" title="Mark as Sent" @click="$parent.$emit('sent', props.row.id)" /><q-btn v-if="props.row.can_mark_paid" flat round color="emerald-500" icon="check" title="Mark as Paid" @click="$parent.$emit('paid', props.row.id)" /><q-btn v-if="props.row.can_write_off" flat round color="amber-600" icon="money_off" title="Write off invoice" @click="$parent.$emit('writeoff', props.row.id)" /><q-btn v-if="props.row.can_cancel" flat round color="red-300" icon="cancel" title="Cancel draft invoice" @click="$parent.$emit('cancel', props.row.id)" /></q-td>''')
-            table.on('preview', lambda e: open_invoice_preview(e.args)); table.on('sent', lambda e: mark_invoice_as_sent_action(e.args)); table.on('paid', lambda e: mark_invoice_as_paid_action(e.args)); table.on('cancel', lambda e: mark_invoice_as_cancelled_action(e.args)); table.on('writeoff', lambda e: mark_invoice_as_written_off_action(e.args)); table.on('download', lambda e: ui.run_javascript(f'window.open("/download/{e.args}", "_blank")'))
+        filter_state = {
+            "query": "",
+            "status": "All",
+            "customer_id": "All",
+            "period": "All Time",
+            "from": None,
+            "to": None,
+            "sort": "Date newest",
+        }
+        all_invoice_rows = [build_invoice_list_row(i, customers, today=today) for i in invoices]
+        customer_options = {"All": "All customers", **{c.id: c.name for c in customers}}
+
+        def parse_custom_invoice_dates():
+            try:
+                d_from = datetime.strptime(from_input.value, '%Y-%m-%d')
+                d_to = datetime.strptime(to_input.value, '%Y-%m-%d')
+            except (TypeError, ValueError):
+                ui.notify('Invalid date format. Use YYYY-MM-DD', color='red-500')
+                return None
+            if d_to < d_from:
+                ui.notify('End date must be on or after start date', color='red-500')
+                return None
+            return d_from, d_to
+
+        def refresh_invoice_table():
+            table_container.clear()
+            rows = filter_and_sort_invoice_rows(all_invoice_rows, filter_state)
+            with table_container:
+                if not rows:
+                    with ui.card().classes('w-full p-10 premium-card items-center justify-center'):
+                        ui.icon('receipt_long', size='40px', color='slate-300')
+                        ui.label('No invoices match these filters').classes('text-slate-400 text-sm mt-2')
+                    return
+
+                with ui.card().classes('w-full p-0 overflow-hidden premium-card'):
+                    cols = invoice_list_columns(_('customers'))
+                    table = ui.table(columns=cols, rows=rows, row_key='id').classes('w-full border-none shadow-none')
+                    table.add_slot('body-cell-status', '''<q-td :props="props"><q-badge :color="props.row.status === 'Paid' ? 'emerald-500' : (props.row.status === 'Sent' ? 'indigo-500' : (props.row.status === 'Overdue' ? 'orange-500' : (props.row.status === 'Written Off' ? 'slate-500' : (props.row.status === 'Cancelled' ? 'red-500' : 'amber-500'))))" :style="{padding:'8px 16px',borderRadius:'100px',fontWeight:'700',fontSize:'10px'}">{{ props.row.status }}</q-badge></q-td>''')
+                    table.add_slot('body-cell-actions', '''<q-td :props="props"><q-btn flat round icon="visibility" title="Preview" @click="$parent.$emit('preview', props.row.id)" /><q-btn flat round color="indigo-600" icon="file_download" title="Download PDF" @click="$parent.$emit('download', props.row.id)" /><q-btn v-if="props.row.can_send" flat round color="indigo-400" icon="send" title="Mark as Sent" @click="$parent.$emit('sent', props.row.id)" /><q-btn v-if="props.row.can_mark_paid" flat round color="emerald-500" icon="check" title="Mark as Paid" @click="$parent.$emit('paid', props.row.id)" /><q-btn v-if="props.row.can_write_off" flat round color="amber-600" icon="money_off" title="Write off invoice" @click="$parent.$emit('writeoff', props.row.id)" /><q-btn v-if="props.row.can_cancel" flat round color="red-300" icon="cancel" title="Cancel draft invoice" @click="$parent.$emit('cancel', props.row.id)" /></q-td>''')
+                    table.on('preview', lambda e: open_invoice_preview(e.args)); table.on('sent', lambda e: mark_invoice_as_sent_action(e.args)); table.on('paid', lambda e: mark_invoice_as_paid_action(e.args)); table.on('cancel', lambda e: mark_invoice_as_cancelled_action(e.args)); table.on('writeoff', lambda e: mark_invoice_as_written_off_action(e.args)); table.on('download', lambda e: ui.run_javascript(f'window.open("/download/{e.args}", "_blank")'))
+
+        def update_invoice_filter(key, value):
+            filter_state[key] = value
+            refresh_invoice_table()
+
+        def apply_invoice_period(period):
+            filter_state['period'] = period
+            custom_date_row.set_visibility(period == 'Custom')
+            if period == 'Custom':
+                dates = parse_custom_invoice_dates()
+                if dates is None:
+                    return
+                filter_state['from'], filter_state['to'] = dates
+            else:
+                filter_state['from'], filter_state['to'] = invoice_filter_period_bounds(period, today)
+            refresh_invoice_table()
+
+        def apply_custom_invoice_dates():
+            dates = parse_custom_invoice_dates()
+            if dates is None:
+                return
+            filter_state['period'] = 'Custom'
+            filter_state['from'], filter_state['to'] = dates
+            refresh_invoice_table()
+
+        def clear_invoice_filters():
+            filter_state.update({
+                "query": "",
+                "status": "All",
+                "customer_id": "All",
+                "period": "All Time",
+                "from": None,
+                "to": None,
+                "sort": "Date newest",
+            })
+            query_input.set_value('')
+            status_select.set_value('All')
+            customer_select.set_value('All')
+            period_select.set_value('All Time')
+            sort_select.set_value('Date newest')
+            from_input.set_value(today.strftime('%Y-%m-%d'))
+            to_input.set_value(today.strftime('%Y-%m-%d'))
+            custom_date_row.set_visibility(False)
+            refresh_invoice_table()
+
+        with ui.card().classes('w-full p-4 premium-card mb-4'):
+            with ui.row().classes('w-full items-center gap-3 flex-wrap'):
+                query_input = ui.input('Search invoices or customers').props('dense outlined clearable').classes('flex-1 min-w-64')
+                status_select = ui.select(INVOICE_STATUS_FILTERS, value='All', label='Status').props('dense outlined').classes('w-40')
+                customer_select = ui.select(customer_options, value='All', label='Customer').props('dense outlined').classes('w-56')
+                period_select = ui.select(INVOICE_PERIOD_FILTERS, value='All Time', label='Period').props('dense outlined').classes('w-40')
+                sort_select = ui.select(INVOICE_SORT_OPTIONS, value='Date newest', label='Sort').props('dense outlined').classes('w-44')
+                ui.button('Clear', icon='restart_alt', on_click=clear_invoice_filters).props('flat no-caps').classes('h-10 rounded-lg px-4 text-slate-500')
+            with ui.row().classes('w-full items-center gap-3 flex-wrap mt-3') as custom_date_row:
+                from_input = ui.input('From', value=today.strftime('%Y-%m-%d')).props('dense outlined').classes('w-40')
+                to_input = ui.input('To', value=today.strftime('%Y-%m-%d')).props('dense outlined').classes('w-40')
+                ui.button('Apply', icon='check', on_click=apply_custom_invoice_dates).classes('btn-primary h-10 rounded-lg px-5')
+            custom_date_row.set_visibility(False)
+
+        table_container = ui.column().classes('w-full')
+        query_input.on_value_change(lambda e: update_invoice_filter('query', e.value or ''))
+        status_select.on_value_change(lambda e: update_invoice_filter('status', e.value or 'All'))
+        customer_select.on_value_change(lambda e: update_invoice_filter('customer_id', e.value or 'All'))
+        period_select.on_value_change(lambda e: apply_invoice_period(e.value or 'All Time'))
+        sort_select.on_value_change(lambda e: update_invoice_filter('sort', e.value or 'Date newest'))
+        refresh_invoice_table()
 
 @ui.page('/')
 def dashboard_page():
