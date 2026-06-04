@@ -479,7 +479,7 @@ def invoices_page():
             with table_container:
                 if not rows:
                     with ui.card().classes('w-full p-10 premium-card items-center justify-center'):
-                        ui.icon('receipt_long', size='40px', color='slate-300')
+                        ui.icon('search_off', size='40px', color='slate-300')
                         ui.label('No invoices match these filters').classes('text-slate-400 text-sm mt-2')
                     return
 
