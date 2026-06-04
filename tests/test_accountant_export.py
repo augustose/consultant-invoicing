@@ -1,6 +1,8 @@
 import csv
 import io
+import json
 import sys
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -9,7 +11,7 @@ from sqlmodel import SQLModel, Session, create_engine
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 
 from database import Account, AccountType, CompanySettings, Customer, Expense, Invoice, InvoiceItem, Service  # noqa: E402
-from export_utils import build_accountant_export_context, money, rows_to_csv_text  # noqa: E402
+from export_utils import build_accountant_export_context, create_accountant_csv_zip, money, rows_to_csv_text  # noqa: E402
 
 
 def make_session():
@@ -225,3 +227,90 @@ def test_rows_to_csv_text_writes_headers_and_decimal_strings():
 
 def test_money_uses_half_up_cent_rounding():
     assert money(2.675) == "2.68"
+
+
+def test_create_csv_zip_contains_report_manifest_and_core_csv_files(tmp_path):
+    session = make_session()
+
+    zip_path = create_accountant_csv_zip(
+        session=session,
+        start_date=datetime(2026, 1, 1),
+        end_date=datetime(2026, 1, 31),
+        include_invoice_items=False,
+        export_dir=tmp_path,
+    )
+
+    assert zip_path.name == "accountant_export_2026-01-01_to_2026-01-31.zip"
+    with zipfile.ZipFile(zip_path) as archive:
+        names = sorted(archive.namelist())
+        assert names == [
+            "accountant_report.html",
+            "chart_of_accounts.csv",
+            "customers.csv",
+            "expenses.csv",
+            "invoices.csv",
+            "manifest.json",
+            "summary.csv",
+            "tax_report.csv",
+        ]
+        html = archive.read("accountant_report.html").decode("utf-8")
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+        invoices = parse_csv(archive.read("invoices.csv").decode("utf-8"))
+
+    assert "https://cdn.tailwindcss.com" in html
+    assert "Augusto Sosa Escalada (Mac)" in html
+    assert "2026-01-01 to 2026-01-31" in html
+    assert "Files included" in html
+    assert manifest["format"] == "csv_zip"
+    assert manifest["include_invoice_items"] is False
+    assert manifest["files"] == [
+        "accountant_report.html",
+        "summary.csv",
+        "invoices.csv",
+        "expenses.csv",
+        "tax_report.csv",
+        "customers.csv",
+        "chart_of_accounts.csv",
+        "manifest.json",
+    ]
+    assert invoices[0]["invoice_number"] == "100123"
+
+
+def test_csv_zip_includes_invoice_items_when_requested(tmp_path):
+    session = make_session()
+
+    zip_path = create_accountant_csv_zip(
+        session=session,
+        start_date=datetime(2026, 1, 1),
+        end_date=datetime(2026, 1, 31),
+        include_invoice_items=True,
+        export_dir=tmp_path,
+    )
+
+    with zipfile.ZipFile(zip_path) as archive:
+        assert "invoice_items.csv" in archive.namelist()
+        invoice_items = parse_csv(archive.read("invoice_items.csv").decode("utf-8"))
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+
+    assert invoice_items[0]["description"] == "IT Consulting\nMonthly support"
+    assert manifest["include_invoice_items"] is True
+    assert "invoice_items.csv" in manifest["files"]
+
+
+def test_empty_csv_zip_still_contains_report_and_headers(tmp_path):
+    session = make_session()
+
+    zip_path = create_accountant_csv_zip(
+        session=session,
+        start_date=datetime(2024, 1, 1),
+        end_date=datetime(2024, 1, 31),
+        include_invoice_items=False,
+        export_dir=tmp_path,
+    )
+
+    with zipfile.ZipFile(zip_path) as archive:
+        html = archive.read("accountant_report.html").decode("utf-8")
+        invoices_csv = archive.read("invoices.csv").decode("utf-8")
+
+    assert "No invoices or expenses were found for this period." in html
+    assert invoices_csv.startswith("invoice_number,invoice_date,due_date")
