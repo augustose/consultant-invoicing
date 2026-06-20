@@ -125,7 +125,7 @@ function start_system() {
     # Run and tee output to logs. We use 2>&1 to capture errors in stdout log too, 
     # but also separate them for easier debugging if needed.
     # Also capture exit code
-    uv run app/main.py > >(tee -a "$STDOUT_LOG") 2> >(tee -a "$STDERR_LOG" >&2)
+    uv run python app/main.py > >(tee -a "$STDOUT_LOG") 2> >(tee -a "$STDERR_LOG" >&2)
     EXIT_CODE=$?
 
     if [ $EXIT_CODE -ne 0 ]; then
