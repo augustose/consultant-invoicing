@@ -1,7 +1,7 @@
 import calendar
 import re
 from datetime import datetime, timedelta
-from nicegui import app, ui
+from nicegui import app, ui, run
 from sqlmodel import Session, select
 from starlette.responses import HTMLResponse, Response
 from database import engine, Account, TaxRate, AccountType, Customer, Service, Invoice, InvoiceItem, RecurringProfile, CompanySettings, Expense, ClientExpense, ClientExpenseEvent, get_or_create_reimbursable_service, tax_breakdown, TPS_RATE, TVQ_RATE, COMBINED_TAX_RATE, utc_now
@@ -10,7 +10,11 @@ from template_utils import TemplateManager
 from export_utils import create_accountant_audit_xml, create_accountant_csv_zip, validate_export_range
 import log_config  # noqa: F401 — initializes logging on import
 from loguru import logger
-import os, json, csv
+import os, json, csv, base64
+from ollama_utils import (
+    ollama_is_ready, list_models, probe_model_is_vision,
+    normalize_to_image, extract_receipt,
+)
 import plotly.graph_objects as go
 from collections import defaultdict
 
@@ -983,7 +987,11 @@ def client_expenses_page():
 
     with Session(engine) as s:
         customers = s.exec(select(Customer)).all()
+        conf = s.exec(select(CompanySettings)).first()
     customer_options = {c.id: c.name for c in customers}
+    ollama_url = conf.ollama_url if conf else None
+    ollama_model = conf.ollama_model if conf else None
+    ai_ready = ollama_is_ready(ollama_url, ollama_model)
 
     pending_receipt = {'name': None, 'content': None}
 
@@ -1029,6 +1037,44 @@ def client_expenses_page():
                     pending_receipt['content'] = e.content.read()
                     ui.notify(f'Receipt "{e.name}" attached', color='indigo-500')
                 ui.upload(on_upload=on_receipt_upload, label='Attach receipt (optional)', auto_upload=True).props('flat color=indigo-600').classes('max-w-xs')
+
+                # Optional AI auto-fill: only shown when an Ollama server + model
+                # are configured. The manual flow above is untouched without it.
+                if ai_ready:
+                    def _do_extract(content, name):
+                        image_bytes = normalize_to_image(content, name)
+                        b64 = base64.b64encode(image_bytes).decode('ascii')
+                        return extract_receipt(ollama_url, ollama_model, b64)
+
+                    async def on_autofill_upload(e):
+                        content = e.content.read()
+                        name = e.name
+                        # The uploaded file also becomes the attached receipt.
+                        pending_receipt['name'] = name
+                        pending_receipt['content'] = content
+                        ui.notify('Reading receipt with AI…', color='indigo-500')
+                        try:
+                            data = await run.io_bound(_do_extract, content, name)
+                        except Exception as ex:
+                            logger.warning(f"Ollama receipt extraction failed: {ex}")
+                            ui.notify('Could not read the receipt — please enter the details manually.',
+                                      color='amber-500')
+                            return
+                        if data['date']:
+                            date_input.value = data['date'].strftime('%Y-%m-%d')
+                        desc_input.value = data['description']
+                        amount_input.value = data['amount'] or data['total']
+                        tps_check.value = data['tps'] > 0
+                        tvq_check.value = data['tvq'] > 0
+                        notes_input.value = data['notes']
+                        update_total()
+                        msg = 'Receipt read — please review every field before saving.'
+                        if data['warnings']:
+                            msg += ' ⚠ ' + ' '.join(data['warnings'])
+                        ui.notify(msg, color='emerald-500', multi_line=True, timeout=8000)
+
+                    ui.upload(on_upload=on_autofill_upload, label='✨ Auto-fill from receipt (AI)',
+                              auto_upload=True).props('flat color=violet-600').classes('max-w-xs')
 
                 def save_expense():
                     if not desc_input.value.strip():
@@ -2189,6 +2235,71 @@ def settings_page():
                     with ui.row().classes('gap-2'):
                         for t in tags:
                             ui.badge(t, color='indigo-100').classes('text-indigo-600 px-3 py-1 lowercase font-mono')
+
+        # ── AI Receipt Extraction (optional Ollama integration) ──
+        with ui.card().classes('w-full p-8 premium-card mt-8'):
+            ui.label('AI Receipt Extraction (Optional)').classes('text-xl font-bold mb-2')
+            ui.label('Connect a self-hosted Ollama server to auto-fill client expenses from a '
+                     'receipt image or PDF. Leave blank to keep entering expenses manually.').classes('text-slate-500 text-sm mb-6')
+
+            ollama_url_input = ui.input('Ollama Server URL', value=conf.ollama_url or '',
+                                        placeholder='http://192.168.1.50:11434').classes('w-full').props('outlined rounded')
+
+            initial_models = {conf.ollama_model: conf.ollama_model} if conf.ollama_model else {}
+            model_select = ui.select(initial_models, value=conf.ollama_model, label='Model').classes('w-full mt-4').props('outlined rounded')
+            ollama_status = ui.label('').classes('text-sm mt-3')
+            # Tracks which discovered models can read images (vision-capable).
+            vision_map: dict = {}
+
+            async def test_ollama_connection():
+                url = (ollama_url_input.value or '').strip()
+                if not url:
+                    ui.notify('Enter a server URL first', color='amber-500'); return
+                ollama_status.classes(replace='text-sm mt-3 text-slate-400')
+                ollama_status.set_text('Connecting…')
+                try:
+                    names = await run.io_bound(list_models, url)
+                except Exception as ex:
+                    logger.warning(f"Ollama /api/tags failed: {ex}")
+                    ollama_status.classes(replace='text-sm mt-3 text-red-500')
+                    ollama_status.set_text(f'Could not reach Ollama at {url}.')
+                    return
+                if not names:
+                    ollama_status.classes(replace='text-sm mt-3 text-amber-600')
+                    ollama_status.set_text('Connected, but no models are installed on the server.')
+                    return
+                vision_map.clear()
+                options = {}
+                for name in names:
+                    is_vision = await run.io_bound(probe_model_is_vision, url, name)
+                    vision_map[name] = bool(is_vision)
+                    options[name] = f'{name}  ✓ vision' if is_vision else f'{name}  — text only (cannot read receipts)'
+                model_select.set_options(options)
+                vision_count = sum(1 for v in vision_map.values() if v)
+                ollama_status.classes(replace='text-sm mt-3 text-emerald-600')
+                ollama_status.set_text(f'Connected — {len(names)} model(s), {vision_count} vision-capable. Select one and save.')
+
+            def save_ollama_settings():
+                url = (ollama_url_input.value or '').strip() or None
+                model = model_select.value or None
+                # Block models we know can't read images; vision_map is empty until tested.
+                if model and vision_map.get(model) is False:
+                    ui.notify('That model cannot read images. Pick a vision-capable model.', color='amber-500'); return
+                try:
+                    with Session(engine) as s:
+                        db_conf = s.get(CompanySettings, conf.id)
+                        db_conf.ollama_url = url
+                        db_conf.ollama_model = model
+                        s.add(db_conf); s.commit()
+                    logger.info(f"Ollama settings updated: url={url}, model={model}")
+                    ui.notify('AI settings saved!', color='emerald-500')
+                except Exception as ex:
+                    logger.exception("Error saving Ollama settings")
+                    ui.notify(f'Error: {ex}', color='red-500')
+
+            with ui.row().classes('w-full gap-4 mt-6'):
+                ui.button('Test Connection', icon='wifi_tethering', on_click=test_ollama_connection).classes('h-14 rounded-2xl border-2 border-indigo-100 text-indigo-600').props('flat')
+                ui.button('Save AI Settings', icon='save', on_click=save_ollama_settings).classes('btn-primary h-14 px-8 rounded-2xl ml-auto')
 
 
 @ui.page('/help')

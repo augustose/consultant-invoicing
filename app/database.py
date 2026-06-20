@@ -67,6 +67,9 @@ class CompanySettings(SQLModel, table=True):
     currency: str = Field(default="CAD")
     language: str = Field(default="en") # en/es
     custom_template_path: Optional[str] = None
+    # Optional self-hosted Ollama for receipt extraction (see ollama_utils.py).
+    ollama_url: Optional[str] = None
+    ollama_model: Optional[str] = None
 
 class TaxRate(SQLModel, table=True):
     """Tax configuration (e.g., TPS, TVQ)."""
@@ -211,8 +214,33 @@ sqlite_file_name = "data/accounting.db"
 sqlite_url = f"sqlite:///{sqlite_file_name}"
 engine = create_engine(sqlite_url, echo=False)
 
+def add_missing_columns(target_engine, table: str, columns: dict) -> list:
+    """Idempotently add absent columns to an existing SQLite table.
+
+    `create_all` creates new tables but never ALTERs existing ones, so columns
+    added to a model after a DB already exists need this lightweight migration.
+    `columns` maps column name → SQL type. Returns the names actually added.
+    """
+    from sqlalchemy import text
+
+    with target_engine.connect() as conn:
+        existing = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})")).all()}
+        added = []
+        for name, sql_type in columns.items():
+            if name not in existing:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}"))
+                added.append(name)
+        conn.commit()
+    return added
+
+
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
+    # Backfill columns added to existing tables after their first creation.
+    add_missing_columns(engine, "companysettings", {
+        "ollama_url": "TEXT",
+        "ollama_model": "TEXT",
+    })
 
 def seed_initial_data():
     """Populate default Chart of Accounts for a Quebec-based consultant."""

@@ -10,7 +10,8 @@ dependencies = [
     "python-dotenv",
     "plotly",
     "jinja2",
-    "reportlab"
+    "reportlab",
+    "pymupdf>=1.27.2.3",
 ]
 
 [dependency-groups]
