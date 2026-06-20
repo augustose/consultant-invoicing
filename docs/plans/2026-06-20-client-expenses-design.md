@@ -137,8 +137,7 @@ Modeled on `RecurringProfile.next_issue_date` (`app/database.py:97`), **not**
 status-triggered.
 
 - A recurring `ClientExpense` stores `next_due_date`.
-- A generation pass (run on app start / page load, same pattern as recurring
-  invoices) creates the next `ClientExpense` when `next_due_date` is reached,
+- A generation pass creates the next `ClientExpense` when `next_due_date` is reached,
   **independent of reimbursement status**. A stuck/disputed expense no longer kills
   the recurring chain.
 - New entry: same `customer_id`, `description`, amounts, `is_recurring`,
@@ -146,6 +145,19 @@ status-triggered.
   fresh each cycle); `next_due_date` advanced one month.
 - **Day clamp:** `recurrence_day` 29–31 clamps to the last valid day of shorter
   months (e.g. day 31 → Feb 28/29).
+
+**Trigger — reuse the existing timer (review #2, note B):** recurring invoices run
+via a 60-second `ui.timer` registered at startup:
+`app.on_startup(lambda: ui.timer(60.0, check_recurring))` (`app/main.py:2058`),
+calling `check_recurring()` (`app/main.py:1991`). Hook client-expense generation into
+that **same cadence** — call it from within / alongside `check_recurring()`. Do NOT
+introduce a second scheduler or trigger point.
+
+**Date math — do NOT copy the existing shortcut (review #2, note A):**
+`check_recurring()` advances with `p.next_issue_date += timedelta(days=30)`
+(`app/main.py:1999`), a crude 30-day step that drifts off calendar months. The new
+feature requires true monthly cadence with day clamping — use real month arithmetic
+(`dateutil.relativedelta` or manual month rollover), **not** `timedelta(days=30)`.
 
 ### Invoice attachment — non-taxable pass-through (DECISION + KEY RISK)
 `ClientExpense.total` already includes TPS+TVQ. The client is reimbursed the exact
@@ -222,7 +234,22 @@ consistency).
 ## Implementation Risk Summary
 
 1. **Invoice tax-engine change** is the highest-risk item — it touches shared,
-   existing invoice code. Regression-test all-taxable invoices first.
-2. Recurrence generation pass must follow the existing recurring-invoice trigger
-   pattern (don't invent a second scheduler).
+   existing invoice code used by every invoice. Mitigation:
+   - Snapshot `subtotal`/`tax_total`/`total` of a few existing **all-taxable**
+     invoices first; after the change assert they are **byte-identical**.
+   - Apply the change in **both** `update_totals()` (live UI, `app/main.py:397`) and
+     `save()` (persistence, `app/main.py:435`) so displayed and stored totals never
+     diverge.
+2. Recurrence: reuse the existing 60-second `ui.timer` / `check_recurring()` trigger
+   (`app/main.py:2058`, `:1991`) — don't add a second scheduler. Use real calendar
+   month arithmetic, NOT the `timedelta(days=30)` shortcut at `app/main.py:1999`.
 3. Filename handling: commit-before-write + sanitize.
+
+---
+
+## Review trail
+
+- Review #1: [2026-06-20-client-expenses-design-review.md](./2026-06-20-client-expenses-design-review.md)
+  — 3 blockers + 7 concerns, all resolved.
+- Review #2: [2026-06-20-client-expenses-design-review-2.md](./2026-06-20-client-expenses-design-review-2.md)
+  — ✅ cleared to implement; notes A/B folded into the Recurrence section above.
