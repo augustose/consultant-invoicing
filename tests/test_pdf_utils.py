@@ -14,6 +14,7 @@ def test_build_invoice_pdf_contains_invoice_content(tmp_path):
         date=datetime(2026, 6, 3),
         due_date=datetime(2026, 7, 3),
         subtotal=600.0,
+        tax_total=89.85,
         total=689.85,
         status="Draft",
         notes="Thank you for your business.",

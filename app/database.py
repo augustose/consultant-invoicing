@@ -12,6 +12,23 @@ def utc_now() -> datetime:
     """
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
+# --- Quebec tax constants (TPS 5% + TVQ 9.975%) ---
+TPS_RATE = 0.05
+TVQ_RATE = 0.09975
+COMBINED_TAX_RATE = TPS_RATE + TVQ_RATE  # 0.14975
+
+
+def tax_breakdown(tax_total):
+    """Split a stored invoice `tax_total` into its (TPS, TVQ) components.
+
+    Derives the split from the actual tax charged rather than from the subtotal,
+    so it stays correct when an invoice contains non-taxable (reimbursement)
+    lines. For an all-taxable invoice this equals subtotal*0.05 / subtotal*0.09975.
+    """
+    if COMBINED_TAX_RATE == 0:
+        return 0.0, 0.0
+    return tax_total * TPS_RATE / COMBINED_TAX_RATE, tax_total * TVQ_RATE / COMBINED_TAX_RATE
+
 
 # --- Enums for Accounting Standards ---
 
@@ -128,6 +145,65 @@ class Expense(SQLModel, table=True):
     account_id: int = Field(foreign_key="account.id")
     notes: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)
+
+class ClientExpense(SQLModel, table=True):
+    """An expense paid on behalf of a client, tracked through reimbursement.
+
+    Distinct from `Expense` (business expense → Chart of Accounts). The amounts
+    are tax-inclusive out-of-pocket costs to be reimbursed by the client.
+    `status` is a plain string (validated in app helpers, not at the DB level),
+    matching the convention used by `Invoice.status`.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    customer_id: int = Field(foreign_key="customer.id")
+    description: str
+    date: datetime = Field(default_factory=utc_now)
+    amount: float = Field(default=0.0)  # pre-tax subtotal
+    tps: float = Field(default=0.0)
+    tvq: float = Field(default=0.0)
+    total: float = Field(default=0.0)   # amount + tps + tvq (tax-inclusive)
+    status: str = Field(default="pending")
+    receipt_path: Optional[str] = None
+    claim_date: Optional[datetime] = None
+    reimbursed_date: Optional[datetime] = None
+    invoice_id: Optional[int] = Field(default=None, foreign_key="invoice.id")
+    is_recurring: bool = Field(default=False)
+    recurrence_day: Optional[int] = None
+    next_due_date: Optional[datetime] = None
+    notes: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+class ClientExpenseEvent(SQLModel, table=True):
+    """Append-only audit log of every client-expense status change."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    client_expense_id: int = Field(foreign_key="clientexpense.id")
+    status: str
+    changed_at: datetime = Field(default_factory=utc_now)
+    notes: Optional[str] = None
+
+REIMBURSABLE_SERVICE_NAME = "Reimbursable Expense"
+
+def get_or_create_reimbursable_service(session: Session) -> Service:
+    """The catalog service used for client-expense reimbursement invoice lines.
+
+    `InvoiceItem.service_id` is required, so reimbursement lines point at this
+    single shared service rather than nulling the column.
+    """
+    existing = session.exec(
+        select(Service).where(Service.name == REIMBURSABLE_SERVICE_NAME)
+    ).first()
+    if existing:
+        return existing
+    svc = Service(
+        name=REIMBURSABLE_SERVICE_NAME,
+        description="Pass-through reimbursement of a client expense (tax-inclusive).",
+        unit_price=0.0,
+    )
+    session.add(svc)
+    session.commit()
+    session.refresh(svc)
+    return svc
 
 # --- Database Engine ---
 

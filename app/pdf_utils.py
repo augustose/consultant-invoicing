@@ -11,6 +11,8 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 from reportlab.platypus import Paragraph
 
+from database import tax_breakdown
+
 _FONT = "Helvetica"
 _FONT_BOLD = "Helvetica-Bold"
 _ARIAL = Path("/System/Library/Fonts/Supplemental/Arial.ttf")
@@ -61,8 +63,7 @@ def build_invoice_pdf(invoice, customer, items, vendor_settings) -> bytes:
     currency = getattr(vendor_settings, "currency", "CAD") or "CAD"
 
     subtotal = float(invoice.subtotal)
-    gst = subtotal * 0.05
-    qst = subtotal * 0.09975
+    gst, qst = tax_breakdown(invoice.tax_total)
     total = float(invoice.total)
     balance_due = 0.0 if invoice.status == "Paid" else total
 

@@ -1,8 +1,10 @@
+import calendar
+import re
 from datetime import datetime, timedelta
 from nicegui import app, ui
 from sqlmodel import Session, select
 from starlette.responses import HTMLResponse, Response
-from database import engine, Account, TaxRate, AccountType, Customer, Service, Invoice, InvoiceItem, RecurringProfile, CompanySettings, Expense
+from database import engine, Account, TaxRate, AccountType, Customer, Service, Invoice, InvoiceItem, RecurringProfile, CompanySettings, Expense, ClientExpense, ClientExpenseEvent, get_or_create_reimbursable_service, tax_breakdown, TPS_RATE, TVQ_RATE, COMBINED_TAX_RATE, utc_now
 from pdf_utils import build_invoice_pdf
 from template_utils import TemplateManager
 from export_utils import create_accountant_audit_xml, create_accountant_csv_zip, validate_export_range
@@ -16,6 +18,81 @@ LAST_EXTERNAL_INVOICE_NUMBER = 100122
 INVOICE_STATUS_FILTERS = ["All", "Draft", "Sent", "Overdue", "Paid", "Written Off", "Cancelled"]
 INVOICE_PERIOD_FILTERS = ["All Time", "This Month", "Last Month", "This Year", "Last Year", "Custom"]
 INVOICE_SORT_OPTIONS = ["Date newest", "Date oldest", "Total high", "Total low", "Customer A-Z", "Invoice #"]
+
+# Quebec tax constants (TPS_RATE/TVQ_RATE/COMBINED_TAX_RATE) and tax_breakdown
+# are imported from database.py as the single source of truth.
+
+# --- Client expense workflow ---
+CLIENT_EXPENSE_TRANSITIONS = {
+    "pending": ("claimed",),
+    "claimed": ("waiting",),
+    "waiting": ("disputed", "reimbursed"),
+    "disputed": ("reimbursed", "written_off"),
+    "reimbursed": (),
+    "written_off": (),
+}
+CLIENT_EXPENSE_STATUSES = tuple(CLIENT_EXPENSE_TRANSITIONS.keys())
+FOLLOWUP_THRESHOLD_DAYS = 30
+REIMBURSABLE_SERVICE_NAME = "Reimbursable Expense"
+
+
+def compute_tax_split(amount, apply_tps, apply_tvq):
+    """(tps, tvq, total) for a pre-tax amount. Quebec TPS/TVQ, rounded to cents."""
+    amount = amount or 0
+    tps = round(amount * TPS_RATE, 2) if apply_tps else 0.0
+    tvq = round(amount * TVQ_RATE, 2) if apply_tvq else 0.0
+    return tps, tvq, round(amount + tps + tvq, 2)
+
+
+def compute_invoice_totals(items):
+    """(subtotal, tax_total, total) over (line_total, taxable) pairs.
+
+    Tax is applied only to taxable lines; non-taxable lines (e.g. reimbursed
+    client expenses already tax-inclusive) are added to the subtotal untaxed.
+    When every line is taxable this equals the legacy `subtotal * COMBINED_TAX_RATE`.
+    """
+    subtotal = sum((line_total or 0) for line_total, _ in items)
+    taxable_base = sum((line_total or 0) for line_total, taxable in items if taxable)
+    tax_total = taxable_base * COMBINED_TAX_RATE
+    return subtotal, tax_total, subtotal + tax_total
+
+
+def client_expense_next_states(status):
+    """Valid next statuses for a client expense (empty for terminal states)."""
+    return CLIENT_EXPENSE_TRANSITIONS.get(status, ())
+
+
+def client_expense_can_transition(current, target):
+    return target in client_expense_next_states(current)
+
+
+def advance_recurrence_date(current, day):
+    """Same day next month, clamped to the last valid day of shorter months."""
+    month = current.month + 1
+    year = current.year
+    if month > 12:
+        month = 1
+        year += 1
+    last_day = calendar.monthrange(year, month)[1]
+    return current.replace(year=year, month=month, day=min(day, last_day))
+
+
+def client_expense_needs_followup(status, last_change, today, threshold=FOLLOWUP_THRESHOLD_DAYS):
+    """True when an expense has sat in `waiting` longer than the threshold."""
+    if status != "waiting":
+        return False
+    return (today - last_change).days > threshold
+
+
+def sanitize_receipt_filename(name):
+    """Safe basename: drop directories, collapse unsafe chars, keep the extension."""
+    base = os.path.basename(str(name or "")).strip()
+    base = base.replace("..", "")
+    stem, ext = os.path.splitext(base)
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("_.")
+    ext = re.sub(r"[^A-Za-z0-9.]+", "", ext)
+    cleaned = f"{stem}{ext}"
+    return cleaned or "receipt"
 
 
 def next_invoice_number(invoices) -> str:
@@ -153,7 +230,7 @@ TRANSLATIONS = {
     'en': {
         'dashboard': 'Dashboard', 'invoices': 'Invoices', 'recurring': 'Subscription',
         'customers': 'Customers', 'services': 'Services', 'accounts': 'Accounts',
-        'reports': 'Reports', 'expenses': 'Expenses', 'settings': 'Settings', 'help': 'Help', 'welcome': 'Welcome back, Consultant',
+        'reports': 'Reports', 'expenses': 'Expenses', 'client_expenses': 'Client Expenses', 'settings': 'Settings', 'help': 'Help', 'welcome': 'Welcome back, Consultant',
         'overdue': 'OVERDUE', 'draft': 'DRAFT / PENDING', 'paid': 'PAID (TOTAL)',
         'new_invoice': 'New Invoice', 'add_customer': 'Add Customer', 'add_service': 'Add Service',
         'mark_paid': 'Mark as Paid', 'download_pdf': 'Download PDF', 'preview': 'Preview',
@@ -166,7 +243,7 @@ TRANSLATIONS = {
     'es': {
         'dashboard': 'Tablero', 'invoices': 'Facturas', 'recurring': 'Suscripciones',
         'customers': 'Clientes', 'services': 'Servicios', 'accounts': 'Cuentas',
-        'reports': 'Reportes', 'expenses': 'Gastos', 'settings': 'Configuración', 'help': 'Ayuda', 'welcome': 'Bienvenido de nuevo, Consultor',
+        'reports': 'Reportes', 'expenses': 'Gastos', 'client_expenses': 'Gastos de Cliente', 'settings': 'Configuración', 'help': 'Ayuda', 'welcome': 'Bienvenido de nuevo, Consultor',
         'overdue': 'VENCIDO', 'draft': 'BORRADOR / PENDIENTE', 'paid': 'PAGADO (TOTAL)',
         'new_invoice': 'Nueva Factura', 'add_customer': 'Agregar Cliente', 'add_service': 'Agregar Servicio',
         'mark_paid': 'Marcar como Pagado', 'download_pdf': 'Descargar PDF', 'preview': 'Vista Previa',
@@ -219,6 +296,7 @@ def create_menu(active_path='/'):
                     ('/services', 'inventory_2', 'Services'),
                     ('/accounts', 'account_balance_wallet', 'Accounts'),
                     ('/expenses', 'payments', 'Expenses'),
+                    ('/client-expenses', 'request_quote', 'Client_Expenses'),
                     ('/reports', 'bar_chart', 'Reports'),
                     ('/settings', 'settings', 'Settings'),
                     ('/help', 'help_outline', 'Help'),
@@ -291,10 +369,11 @@ def open_invoice_preview(inv_id):
             with ui.column().classes('invoice-totals gap-2'):
                 with ui.row().classes('w-full justify-between'):
                     ui.label(_('subtotal')).classes('text-slate-500'); ui.label(f'${inv.subtotal:,.2f}')
+                _prev_tps, _prev_tvq = tax_breakdown(inv.tax_total)
                 with ui.row().classes('w-full justify-between'):
-                    ui.label('TPS (5%)').classes('text-slate-500'); ui.label(f'${inv.subtotal * 0.05:,.2f}')
+                    ui.label('TPS (5%)').classes('text-slate-500'); ui.label(f'${_prev_tps:,.2f}')
                 with ui.row().classes('w-full justify-between'):
-                    ui.label('TVQ (9.975%)').classes('text-slate-500'); ui.label(f'${inv.subtotal * 0.09975:,.2f}')
+                    ui.label('TVQ (9.975%)').classes('text-slate-500'); ui.label(f'${_prev_tvq:,.2f}')
                 with ui.row().classes('w-full justify-between pt-4 border-t border-slate-200 mt-2'):
                     ui.label(_('grand_total')).classes('text-xl font-black text-indigo-600')
                     ui.label(f'${inv.total:,.2f}').classes('text-xl font-black text-indigo-600')
@@ -395,11 +474,11 @@ def invoices_page():
                 # Placeholders for totals labels
                 totals_labels = {}
                 def update_totals():
-                    sub = sum((i['q'].value or 0) * (i['p'].value or 0) for i in line_items if i['s'].value)
-                    tax = sub * 0.14975
+                    items = [((i['q'].value or 0) * (i['p'].value or 0), True) for i in line_items if i['s'].value]
+                    sub, tax, tot = compute_invoice_totals(items)
                     if 'sub' in totals_labels: totals_labels['sub'].text = f'${sub:,.2f}'
                     if 'tax' in totals_labels: totals_labels['tax'].text = f'${tax:,.2f}'
-                    if 'tot' in totals_labels: totals_labels['tot'].text = f'${(sub + tax):,.2f}'
+                    if 'tot' in totals_labels: totals_labels['tot'].text = f'${tot:,.2f}'
 
                 def add_row():
                     with it_cont:
@@ -430,9 +509,10 @@ def invoices_page():
                     if not c_sel.value: return ui.notify('Pick a client!', color='red-500')
                     try:
                         with Session(engine) as s:
-                            sub = sum((i['q'].value * i['p'].value) for i in line_items if i['s'].value)
+                            items = [(i['q'].value * i['p'].value, True) for i in line_items if i['s'].value]
+                            sub, tax, tot = compute_invoice_totals(items)
                             existing_invoices = s.exec(select(Invoice)).all()
-                            inv = Invoice(number=next_invoice_number(existing_invoices), customer_id=c_sel.value, date=datetime.strptime(i_date.value, '%Y-%m-%d'), subtotal=sub, tax_total=sub*0.14975, total=sub*1.14975, status='Draft')
+                            inv = Invoice(number=next_invoice_number(existing_invoices), customer_id=c_sel.value, date=datetime.strptime(i_date.value, '%Y-%m-%d'), subtotal=sub, tax_total=tax, total=tot, status='Draft')
                             s.add(inv); s.commit(); s.refresh(inv)
                             for i in line_items:
                                 if i['s'].value:
@@ -692,9 +772,7 @@ def expenses_page():
     }
 
     def compute_total(amount, apply_tps, apply_tvq):
-        tps = round(amount * TPS_RATE, 2) if apply_tps else 0.0
-        tvq = round(amount * TVQ_RATE, 2) if apply_tvq else 0.0
-        return tps, tvq, round(amount + tps + tvq, 2)
+        return compute_tax_split(amount, apply_tps, apply_tvq)
 
     with ui.column().classes('w-full p-8 max-w-7xl mx-auto animate-fade-in'):
         ui.label('Expenses').classes('text-4xl font-extrabold text-slate-900 dark:text-slate-100 mb-2')
@@ -880,6 +958,257 @@ def expenses_page():
                             ui.label(f'${tot_total:,.2f}').classes('text-xl font-black text-indigo-600')
 
         refresh_table()
+
+CLIENT_EXPENSE_STATUS_COLORS = {
+    'pending': 'amber-500', 'claimed': 'indigo-500', 'waiting': 'orange-500',
+    'disputed': 'red-500', 'reimbursed': 'emerald-500', 'written_off': 'slate-500',
+}
+
+
+def _client_expense_last_change(session, expense):
+    """Most recent status-change timestamp, falling back to created_at."""
+    last = session.exec(
+        select(ClientExpenseEvent.changed_at)
+        .where(ClientExpenseEvent.client_expense_id == expense.id)
+        .order_by(ClientExpenseEvent.changed_at.desc())
+    ).first()
+    return last or expense.created_at
+
+
+@ui.page('/client-expenses')
+def client_expenses_page():
+    inject_premium_styles(); create_menu('/client-expenses')
+    today = datetime.today()
+    os.makedirs('data/receipts', exist_ok=True)
+
+    with Session(engine) as s:
+        customers = s.exec(select(Customer)).all()
+    customer_options = {c.id: c.name for c in customers}
+
+    pending_receipt = {'name': None, 'content': None}
+
+    with ui.column().classes('w-full p-8 max-w-7xl mx-auto animate-fade-in'):
+        ui.label(_('client_expenses')).classes('text-4xl font-extrabold text-slate-900 dark:text-slate-100 mb-2')
+        ui.label('Track purchases made on behalf of clients and their reimbursement').classes('text-slate-400 text-base mb-8')
+
+        if not customer_options:
+            with ui.card().classes('w-full p-10 premium-card items-center justify-center'):
+                ui.icon('group_off', size='40px', color='slate-300')
+                ui.label('Add a customer first to record client expenses').classes('text-slate-400 text-sm mt-2')
+            return
+
+        # ── Add form ──
+        with ui.card().classes('w-full p-6 premium-card mb-6'):
+            ui.label('Add Client Expense').classes('text-sm font-black text-slate-400 uppercase tracking-widest mb-4')
+            with ui.row().classes('w-full gap-4 flex-wrap'):
+                cust_select = ui.select(customer_options, value=next(iter(customer_options)), label='Customer').props('dense outlined').classes('w-56')
+                date_input = ui.input('Date', value=today.strftime('%Y-%m-%d')).props('dense outlined').classes('w-40')
+                desc_input = ui.input('Description').props('dense outlined').classes('flex-1 min-w-48')
+            with ui.row().classes('w-full items-center gap-4 mt-3 flex-wrap'):
+                amount_input = ui.number('Amount (pre-tax)', value=0.0, format='%.2f').props('dense outlined prefix=$').classes('w-44')
+                tps_check = ui.checkbox('TPS (5%)', value=False)
+                tvq_check = ui.checkbox('TVQ (9.975%)', value=False)
+                total_label = ui.label('Total: $0.00').classes('text-lg font-bold text-indigo-600 ml-4')
+
+            def update_total():
+                _, _, total = compute_tax_split(amount_input.value or 0, tps_check.value, tvq_check.value)
+                total_label.set_text(f'Total: ${total:,.2f}')
+            amount_input.on_value_change(lambda _: update_total())
+            tps_check.on_value_change(lambda _: update_total())
+            tvq_check.on_value_change(lambda _: update_total())
+
+            with ui.row().classes('w-full items-center gap-4 mt-3 flex-wrap'):
+                recurring_check = ui.checkbox('Recurring monthly', value=False)
+                day_input = ui.number('Day of month', value=today.day, min=1, max=31).props('dense outlined').classes('w-36')
+                day_input.bind_visibility_from(recurring_check, 'value')
+                notes_input = ui.input('Notes (optional)').props('dense outlined').classes('flex-1 min-w-48')
+
+            with ui.row().classes('w-full items-center gap-4 mt-3 flex-wrap'):
+                def on_receipt_upload(e):
+                    pending_receipt['name'] = e.name
+                    pending_receipt['content'] = e.content.read()
+                    ui.notify(f'Receipt "{e.name}" attached', color='indigo-500')
+                ui.upload(on_upload=on_receipt_upload, label='Attach receipt (optional)', auto_upload=True).props('flat color=indigo-600').classes('max-w-xs')
+
+                def save_expense():
+                    if not desc_input.value.strip():
+                        ui.notify('Description is required', color='red-500'); return
+                    try:
+                        exp_date = datetime.strptime(date_input.value, '%Y-%m-%d')
+                    except ValueError:
+                        ui.notify('Invalid date format. Use YYYY-MM-DD', color='red-500'); return
+                    amt = float(amount_input.value or 0)
+                    if amt <= 0:
+                        ui.notify('Amount must be greater than zero', color='red-500'); return
+                    tps, tvq, total = compute_tax_split(amt, tps_check.value, tvq_check.value)
+                    day = int(day_input.value or exp_date.day) if recurring_check.value else None
+                    with Session(engine) as s:
+                        exp = ClientExpense(
+                            customer_id=cust_select.value, description=desc_input.value.strip(),
+                            date=exp_date, amount=amt, tps=tps, tvq=tvq, total=total,
+                            status='pending', is_recurring=recurring_check.value,
+                            recurrence_day=day,
+                            next_due_date=advance_recurrence_date(exp_date, day) if recurring_check.value else None,
+                            notes=notes_input.value.strip() or None,
+                        )
+                        s.add(exp); s.commit(); s.refresh(exp)
+                        s.add(ClientExpenseEvent(client_expense_id=exp.id, status='pending'))
+                        if pending_receipt['content']:
+                            fname = f"{exp.id}_{sanitize_receipt_filename(pending_receipt['name'])}"
+                            path = os.path.join('data/receipts', fname)
+                            with open(path, 'wb') as f:
+                                f.write(pending_receipt['content'])
+                            exp.receipt_path = path
+                            s.add(exp)
+                        s.commit()
+                    pending_receipt['name'] = None; pending_receipt['content'] = None
+                    ui.notify('Client expense saved!', color='emerald-500')
+                    desc_input.value = ''; amount_input.value = 0.0
+                    tps_check.value = False; tvq_check.value = False
+                    recurring_check.value = False; notes_input.value = ''
+                    update_total(); refresh_table()
+                ui.button('Add Expense', icon='add', on_click=save_expense).classes('btn-primary h-10 px-6 ml-auto')
+
+        # ── Filters ──
+        filter_state = {'customer': 'All', 'status': 'All'}
+        with ui.card().classes('w-full p-4 premium-card mb-4'):
+            with ui.row().classes('w-full items-center gap-3 flex-wrap'):
+                ui.label('Filter:').classes('text-sm font-semibold text-slate-500 mr-2')
+                cust_filter = ui.select({'All': 'All customers', **customer_options}, value='All').props('dense outlined').classes('w-56')
+                status_filter = ui.select(['All', *CLIENT_EXPENSE_STATUSES], value='All').props('dense outlined').classes('w-44')
+                cust_filter.on_value_change(lambda e: (filter_state.update(customer=e.value), refresh_table()))
+                status_filter.on_value_change(lambda e: (filter_state.update(status=e.value), refresh_table()))
+
+        table_container = ui.column().classes('w-full')
+
+        def open_receipt(expense_id):
+            with Session(engine) as s:
+                exp = s.get(ClientExpense, expense_id)
+                path = exp.receipt_path if exp else None
+            if path and os.path.exists(path):
+                ui.download(path)
+            else:
+                ui.notify('No receipt on file', color='amber-500')
+
+        def do_transition(expense_id, target):
+            try:
+                with Session(engine) as s:
+                    transition_client_expense(s, expense_id, target)
+                ui.notify(f'Status → {target}', color='emerald-500')
+                refresh_table()
+            except ValueError as ex:
+                ui.notify(str(ex), color='red-500')
+
+        def do_attach(expense_id, invoice_id, dialog):
+            try:
+                with Session(engine) as s:
+                    attach_client_expense_to_invoice(s, expense_id, invoice_id)
+                ui.notify('Attached to invoice', color='emerald-500')
+                dialog.close(); refresh_table()
+            except ValueError as ex:
+                ui.notify(str(ex), color='red-500')
+
+        def open_detail(expense_id):
+            with Session(engine) as s:
+                exp = s.get(ClientExpense, expense_id)
+                events = s.exec(
+                    select(ClientExpenseEvent).where(ClientExpenseEvent.client_expense_id == expense_id)
+                    .order_by(ClientExpenseEvent.changed_at)
+                ).all()
+                draft_invoices = s.exec(
+                    select(Invoice).where(Invoice.customer_id == exp.customer_id, Invoice.status == 'Draft')
+                ).all()
+                draft_options = {inv.id: f"#{inv.number} (${inv.total:,.2f})" for inv in draft_invoices}
+                event_rows = [(e.status, e.changed_at.strftime('%Y-%m-%d %H:%M'), e.notes or '') for e in events]
+                cust_name = customer_options.get(exp.customer_id, '?')
+                cur_status, exp_total, exp_desc = exp.status, exp.total, exp.description
+                attached_invoice = exp.invoice_id
+            with ui.dialog() as dialog, ui.card().classes('p-8 w-[620px] max-w-[calc(100vw-2rem)] premium-card'):
+                ui.label(exp_desc).classes('text-2xl font-extrabold text-slate-900 dark:text-slate-100')
+                ui.label(f'{cust_name} · ${exp_total:,.2f}').classes('text-slate-500 mb-4')
+                with ui.row().classes('items-center gap-2 mb-6'):
+                    ui.label('Status:').classes('text-sm font-semibold text-slate-500')
+                    ui.badge(cur_status).props(f'color={CLIENT_EXPENSE_STATUS_COLORS.get(cur_status, "slate-500")}')
+
+                next_states = client_expense_next_states(cur_status)
+                if next_states:
+                    ui.label('Advance status').classes('text-xs font-black text-slate-400 uppercase tracking-widest')
+                    with ui.row().classes('gap-2 mb-6'):
+                        for st in next_states:
+                            ui.button(st, on_click=lambda s=st: (dialog.close(), do_transition(expense_id, s))).props('outline no-caps').classes('rounded-lg')
+                else:
+                    ui.label('This expense is in a terminal state.').classes('text-sm text-slate-400 mb-6')
+
+                if attached_invoice is None and draft_options:
+                    ui.label('Attach to draft invoice').classes('text-xs font-black text-slate-400 uppercase tracking-widest')
+                    with ui.row().classes('items-center gap-2 mb-6'):
+                        inv_pick = ui.select(draft_options, label='Draft invoice').props('dense outlined').classes('flex-1')
+                        ui.button('Attach', icon='link', on_click=lambda: inv_pick.value and do_attach(expense_id, inv_pick.value, dialog)).props('flat color=indigo-600')
+                elif attached_invoice is not None:
+                    ui.label(f'Attached to invoice #{attached_invoice}').classes('text-sm text-emerald-600 mb-6')
+
+                ui.label('History').classes('text-xs font-black text-slate-400 uppercase tracking-widest')
+                with ui.column().classes('gap-1 mt-2 mb-4'):
+                    for status, when, note in event_rows:
+                        with ui.row().classes('items-center gap-3'):
+                            ui.badge(status).props(f'color={CLIENT_EXPENSE_STATUS_COLORS.get(status, "slate-500")}')
+                            ui.label(when).classes('text-sm text-slate-500')
+                            if note:
+                                ui.label(f'— {note}').classes('text-sm text-slate-400')
+                with ui.row().classes('w-full justify-end'):
+                    ui.button('Close', on_click=dialog.close).props('flat').classes('text-slate-400')
+            dialog.open()
+
+        def refresh_table():
+            table_container.clear()
+            with Session(engine) as s:
+                query = select(ClientExpense)
+                if filter_state['customer'] != 'All':
+                    query = query.where(ClientExpense.customer_id == filter_state['customer'])
+                if filter_state['status'] != 'All':
+                    query = query.where(ClientExpense.status == filter_state['status'])
+                expenses = s.exec(query.order_by(ClientExpense.date.desc())).all()
+                last_changes = {e.id: _client_expense_last_change(s, e) for e in expenses}
+            with table_container:
+                if not expenses:
+                    with ui.card().classes('w-full p-10 premium-card items-center justify-center'):
+                        ui.icon('request_quote', size='40px', color='slate-300')
+                        ui.label('No client expenses yet').classes('text-slate-400 text-sm mt-2')
+                    return
+                cols = [
+                    {'name': 'date', 'label': 'Date', 'field': 'date_fmt', 'align': 'left'},
+                    {'name': 'customer', 'label': 'Customer', 'field': 'cname', 'align': 'left'},
+                    {'name': 'desc', 'label': 'Description', 'field': 'description', 'align': 'left'},
+                    {'name': 'total', 'label': 'Total', 'field': 'total_fmt', 'align': 'right'},
+                    {'name': 'status', 'label': 'Status', 'field': 'status', 'align': 'center'},
+                    {'name': 'aging', 'label': 'Last change', 'field': 'aging', 'align': 'center'},
+                    {'name': 'actions', 'label': '', 'field': 'actions', 'align': 'right'},
+                ]
+                rows = []
+                for exp in expenses:
+                    last = last_changes[exp.id]
+                    days = (today - last).days
+                    rows.append({
+                        'id': exp.id,
+                        'date_fmt': exp.date.strftime('%Y-%m-%d'),
+                        'cname': customer_options.get(exp.customer_id, '?'),
+                        'description': exp.description,
+                        'total_fmt': f'${exp.total:,.2f}',
+                        'status': exp.status,
+                        'aging': f'{days}d',
+                        'has_receipt': bool(exp.receipt_path),
+                        'followup': client_expense_needs_followup(exp.status, last, today),
+                    })
+                with ui.card().classes('w-full p-0 premium-card overflow-hidden'):
+                    tbl = ui.table(columns=cols, rows=rows, row_key='id').classes('w-full border-none shadow-none')
+                    tbl.add_slot('body-cell-status', '''<q-td :props="props"><q-badge :color="{'pending':'amber-500','claimed':'indigo-500','waiting':'orange-500','disputed':'red-500','reimbursed':'emerald-500','written_off':'slate-500'}[props.row.status] || 'slate-500'" :style="{padding:'6px 14px',borderRadius:'100px',fontWeight:'700',fontSize:'10px'}">{{ props.row.status }}</q-badge></q-td>''')
+                    tbl.add_slot('body-cell-aging', '''<q-td :props="props"><span :class="props.row.followup ? 'text-red-500 font-bold' : 'text-slate-500'">{{ props.row.aging }}<q-icon v-if="props.row.followup" name="warning" class="q-ml-xs" /></span></q-td>''')
+                    tbl.add_slot('body-cell-actions', '''<q-td :props="props"><q-btn flat round icon="open_in_full" title="Details" @click="$parent.$emit('detail', props.row.id)" /><q-btn v-if="props.row.has_receipt" flat round color="indigo-600" icon="receipt" title="Receipt" @click="$parent.$emit('receipt', props.row.id)" /></q-td>''')
+                    tbl.on('detail', lambda e: open_detail(e.args))
+                    tbl.on('receipt', lambda e: open_receipt(e.args))
+
+        refresh_table()
+
 
 @ui.page('/reports')
 def reports_page():
@@ -1988,6 +2317,104 @@ def help_page():
             ui.label('Accounting note').classes('text-xl font-bold text-slate-900 dark:text-slate-100')
             ui.label('For tax reporting, credit notes, and bad debt treatment, confirm the final accounting treatment with your accountant. The app protects the invoice trail, but it does not replace professional accounting advice.').classes('text-slate-600 dark:text-slate-300 leading-relaxed')
 
+def generate_due_client_expenses(session, now=None):
+    """Create the next instance of each due recurring client expense.
+
+    Time-based (independent of reimbursement status), modeled on the recurring
+    invoice pass. The anchor record carries `next_due_date`; when it is reached a
+    child is created carrying the chain forward (advanced one calendar month, day
+    clamped) and the source's `next_due_date` is cleared so it stops generating.
+    Receipts are NOT copied — each cycle's receipt is uploaded fresh.
+    """
+    now = now or datetime.now()
+    due = session.exec(
+        select(ClientExpense).where(
+            ClientExpense.is_recurring == True,  # noqa: E712
+            ClientExpense.next_due_date != None,  # noqa: E711
+            ClientExpense.next_due_date <= now,
+        )
+    ).all()
+    created = []
+    for src in due:
+        period = src.next_due_date
+        day = src.recurrence_day or period.day
+        child = ClientExpense(
+            customer_id=src.customer_id, description=src.description,
+            amount=src.amount, tps=src.tps, tvq=src.tvq, total=src.total,
+            status="pending", is_recurring=True, recurrence_day=day,
+            date=period, next_due_date=advance_recurrence_date(period, day),
+            receipt_path=None,
+        )
+        session.add(child); session.commit(); session.refresh(child)
+        session.add(ClientExpenseEvent(client_expense_id=child.id, status="pending"))
+        src.next_due_date = None  # hand the anchor to the child
+        session.add(src); session.commit()
+        created.append(child)
+    return created
+
+
+def transition_client_expense(session, expense_id, target, notes=None, now=None):
+    """Advance a client expense to `target`, validating the transition.
+
+    Logs a `ClientExpenseEvent` and updates denormalized dates (`claim_date` on
+    →claimed, `reimbursed_date` on →reimbursed). Raises ValueError on an invalid
+    transition.
+    """
+    now = now or utc_now()
+    expense = session.get(ClientExpense, expense_id)
+    if expense is None:
+        raise ValueError("Expense not found")
+    if not client_expense_can_transition(expense.status, target):
+        raise ValueError(f"Invalid transition: {expense.status} → {target}")
+
+    expense.status = target
+    expense.updated_at = now
+    if target == "claimed":
+        expense.claim_date = now
+    elif target == "reimbursed":
+        expense.reimbursed_date = now
+    session.add(expense)
+    session.add(ClientExpenseEvent(client_expense_id=expense.id, status=target, changed_at=now, notes=notes))
+    session.commit()
+    session.refresh(expense)
+    return expense
+
+
+def attach_client_expense_to_invoice(session, expense_id, invoice_id):
+    """Attach a client expense to a Draft invoice as a non-taxable line.
+
+    The expense `total` is already tax-inclusive, so it is passed through untaxed.
+    Non-taxable lines are identified by pointing at the shared "Reimbursable
+    Expense" service (existing items all have NULL `tax_rate_id`, so NULL cannot be
+    used as the marker). Invoice totals are recomputed over all lines and persisted.
+    Raises ValueError if the invoice is not a Draft.
+    """
+    invoice = session.get(Invoice, invoice_id)
+    expense = session.get(ClientExpense, expense_id)
+    if invoice is None or expense is None:
+        raise ValueError("Invoice or expense not found")
+    if invoice.status != "Draft":
+        raise ValueError("Reimbursements can only be attached to Draft invoices")
+
+    reimb_svc = get_or_create_reimbursable_service(session)
+    session.add(InvoiceItem(
+        invoice_id=invoice.id, service_id=reimb_svc.id,
+        description=f"Reimbursable expense: {expense.description}",
+        quantity=1.0, unit_price=expense.total, total=expense.total,
+        tax_rate_id=None,
+    ))
+    session.commit()
+
+    lines = session.exec(select(InvoiceItem).where(InvoiceItem.invoice_id == invoice.id)).all()
+    items = [(line.total, line.service_id != reimb_svc.id) for line in lines]
+    invoice.subtotal, invoice.tax_total, invoice.total = compute_invoice_totals(items)
+    expense.invoice_id = invoice.id
+    expense.updated_at = utc_now()
+    session.add(invoice); session.add(expense); session.commit()
+    session.refresh(invoice)
+    return invoice
+
+
 def check_recurring():
     try:
         with Session(engine) as s:
@@ -1998,6 +2425,9 @@ def check_recurring():
                 inv = Invoice(number=f"REC-{datetime.now().strftime('%m%d')}", customer_id=p.customer_id, subtotal=p.amount, total=p.amount*1.14975, status='Draft')
                 s.add(inv); s.commit(); p.next_issue_date += timedelta(days=30); s.add(p); s.commit()
                 logger.info(f"Factura recurrente creada: #{inv.number}, perfil_id={p.id}")
+            generated = generate_due_client_expenses(s)
+            if generated:
+                logger.info(f"Generados {len(generated)} gastos de cliente recurrentes")
     except Exception as e:
         logger.exception("Error al procesar facturación recurrente")
 

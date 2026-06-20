@@ -3,6 +3,7 @@ from html import escape
 from pathlib import Path
 from datetime import datetime, timedelta
 from jinja2 import Environment, FileSystemLoader
+from database import tax_breakdown
 import log_config  # noqa: F401
 from loguru import logger
 
@@ -122,6 +123,7 @@ class TemplateManager:
                     <td style="text-align: right;">${it.total:,.2f}</td>
                 </tr>"""
 
+            _gst, _qst = tax_breakdown(invoice.tax_total)
             context = {
                 "invoice_id": invoice.id,
                 "invoice_number": invoice.number,
@@ -142,8 +144,8 @@ class TemplateManager:
                 "client_phone": customer.phone or "N/A",
                 "line_items": items_html,
                 "subtotal": f"${invoice.subtotal:,.2f}",
-                "gst": f"${invoice.subtotal * 0.05:,.2f}",
-                "qst": f"${invoice.subtotal * 0.09975:,.2f}",
+                "gst": f"${_gst:,.2f}",
+                "qst": f"${_qst:,.2f}",
                 "total": f"${invoice.total:,.2f}",
                 "balance_due": f"${invoice.total:,.2f}" if invoice.status != "Paid" else "$0.00",
                 "notes": invoice.notes or "Thank you for your business.",

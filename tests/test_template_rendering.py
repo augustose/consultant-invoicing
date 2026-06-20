@@ -16,6 +16,7 @@ def test_render_invoice_formats_multiline_item_description():
         date=datetime(2026, 5, 31),
         due_date=datetime(2026, 5, 31),
         subtotal=600.0,
+        tax_total=89.85,
         total=689.85,
         notes="Monthly support",
     )
@@ -64,6 +65,7 @@ def test_render_invoice_includes_vendor_email():
         date=datetime(2026, 5, 31),
         due_date=datetime(2026, 5, 31),
         subtotal=600.0,
+        tax_total=89.85,
         total=689.85,
         notes="Monthly support",
     )
