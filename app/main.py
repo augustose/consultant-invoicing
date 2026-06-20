@@ -2349,14 +2349,19 @@ def help_page():
                     'actions': 'Record date, description, account, amount, optional TPS/TVQ, and notes; filter by period and export expenses to CSV.',
                 },
                 {
+                    'option': 'Client Expenses',
+                    'purpose': 'Track purchases made on behalf of clients and their reimbursement.',
+                    'actions': 'Record reimbursable expenses (optionally auto-filled from a receipt via AI), attach receipts, advance their status to claimed/reimbursed, and attach them to a draft invoice.',
+                },
+                {
                     'option': 'Reports',
                     'purpose': 'Analyze invoices, taxes, customers, and receivables.',
                     'actions': 'Use period presets or custom dates for sales summary, revenue trend, TPS/TVQ report, income by customer, and aged receivables.',
                 },
                 {
                     'option': 'Settings',
-                    'purpose': 'Configure company identity and invoice templates.',
-                    'actions': 'Update legal name, address, phone, email, GST/QST numbers, download the default template, upload custom HTML, or reset to default.',
+                    'purpose': 'Configure company identity, invoice templates, and optional AI.',
+                    'actions': 'Update legal name, address, phone, email, GST/QST numbers, download the default template, upload custom HTML or reset it, and optionally connect an Ollama server for AI receipt extraction.',
                 },
                 {
                     'option': 'Help',
@@ -2423,6 +2428,20 @@ def help_page():
                 rows=rows,
                 row_key='status',
             ).classes('w-full border-none shadow-none')
+
+        with ui.column().classes('w-full gap-4 border-t border-slate-200 dark:border-slate-700 pt-6'):
+            ui.label('AI Receipt Extraction (Optional)').classes('text-2xl font-bold text-slate-900 dark:text-slate-100')
+            ui.label('Connect a self-hosted Ollama server to read a receipt (image or PDF) and pre-fill a client expense for you. It is fully optional: with no server configured, client expenses work exactly as before.').classes('text-slate-600 dark:text-slate-300 leading-relaxed')
+            ai_steps = [
+                ('1. Configure', 'In Settings → AI Receipt Extraction, enter your Ollama server URL (e.g. http://sphere-634.local:11434), click Test Connection, choose a vision-capable model (marked ✓ vision), and Save.'),
+                ('2. Scan', 'In Client Expenses, an "Auto-fill from receipt" button appears once a server is configured. Upload a photo or PDF of the receipt.'),
+                ('3. Review & confirm', 'The vendor, date, amount and taxes are read and pre-filled. Nothing is saved automatically — check every field, then click Add Expense.'),
+            ]
+            for step_title, step_body in ai_steps:
+                with ui.row().classes('w-full gap-3 items-start'):
+                    ui.label(step_title).classes('text-sm font-bold text-indigo-600 whitespace-nowrap min-w-36')
+                    ui.label(step_body).classes('text-slate-600 dark:text-slate-300 leading-relaxed flex-1')
+            ui.label('Notes: the customer is always chosen by you (never read from the receipt). Receipts in a foreign currency are converted to CAD using the receipt date, with the original amount kept in the expense notes. Only vision-capable models can read receipts; text-only models are listed but cannot be used.').classes('text-slate-500 text-sm leading-relaxed mt-2')
 
         with ui.column().classes('w-full gap-3 border-t border-slate-200 dark:border-slate-700 pt-6'):
             ui.label('Accounting note').classes('text-xl font-bold text-slate-900 dark:text-slate-100')
