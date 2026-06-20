@@ -247,9 +247,44 @@ consistency).
 
 ---
 
+## Testable decomposition (TDD seams) — review #3
+
+The codebase tests **module-level pure functions** (see `tests/test_invoice_numbering.py`)
+and **models against in-memory SQLite** (see `tests/test_expense_model.py`). New logic is
+extracted into module-level pure helpers in `app/main.py` so each is unit-testable
+before any UI wiring. Tests live in `tests/test_client_expenses.py`.
+
+| Helper (module-level in `app/main.py`) | Responsibility | Tested cases |
+|---|---|---|
+| `compute_tax_split(amount, apply_tps, apply_tvq)` | (tps, tvq, total) — **extracted** from the local closure at `app/main.py:694` so it is importable and shared | tps-only, tvq-only, both, neither, rounding |
+| `compute_invoice_totals(items)` | (subtotal, tax_total, total) over lines each `(total, taxable)`; tax only on taxable lines | all-taxable == legacy `sub*0.14975` (regression), mixed taxable/non-taxable, empty |
+| `client_expense_next_states(status)` | tuple of valid next statuses | each status incl. terminal `reimbursed`/`written_off` → () |
+| `client_expense_can_transition(current, target)` | bool | every valid edge True; representative invalid edges False |
+| `advance_recurrence_date(current, day)` | next month, clamped | day 15→15; day 31 Jan→Feb 28; day 31 Jan(leap yr)→Feb 29; Dec→Jan year rollover |
+| `client_expense_needs_followup(status, last_change, today, threshold=30)` | bool | waiting+31d True; waiting+29d False; non-waiting always False |
+| `sanitize_receipt_filename(name)` | safe basename | strips `../`, path seps, keeps ext, collapses odd chars, non-empty fallback |
+
+**Calendar math — DECISION (corrects plan §Recurrence):** `dateutil` is **not** a project
+dependency (`pyproject.toml` has only `pytest` as dev). Use the **stdlib**
+`calendar.monthrange` for the day-clamp in `advance_recurrence_date` — do **not** add
+`dateutil`.
+
+**`compute_total` correction:** the plan referenced `compute_total()` as reusable, but it
+is a local closure inside `expenses_page()` (`app/main.py:694`), not importable. It is
+promoted to module-level `compute_tax_split()` and `expenses_page()` is refactored to call
+it (behavior-preserving).
+
+UI page wiring (`/client-expenses`), file upload, and DB writes are verified by running the
+app, not unit-tested — matching the existing convention (page functions are untested).
+
+---
+
 ## Review trail
 
 - Review #1: [2026-06-20-client-expenses-design-review.md](./2026-06-20-client-expenses-design-review.md)
   — 3 blockers + 7 concerns, all resolved.
 - Review #2: [2026-06-20-client-expenses-design-review-2.md](./2026-06-20-client-expenses-design-review-2.md)
   — ✅ cleared to implement; notes A/B folded into the Recurrence section above.
+- Review #3 (pre-implementation): added the Testable decomposition section; corrected two
+  code references (`compute_total` is a local closure → promote to module-level;
+  `dateutil` absent → use stdlib `calendar`).
