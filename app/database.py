@@ -1,7 +1,17 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import List, Optional
 from sqlmodel import Field, Relationship, SQLModel, Session, create_engine, select
+
+
+def utc_now() -> datetime:
+    """Naive UTC timestamp (drop-in for the deprecated datetime.utcnow()).
+
+    Returns a naive datetime so it stays comparable with the naive local
+    datetimes used elsewhere in the app (filters, recurrence, aging math).
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
 
 # --- Enums for Accounting Standards ---
 
@@ -58,7 +68,7 @@ class Customer(SQLModel, table=True):
     phone: Optional[str] = None
     address: Optional[str] = None
     currency: str = Field(default="CAD")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
 
 class Service(SQLModel, table=True):
     """Catalog of services/products."""
@@ -73,7 +83,7 @@ class Invoice(SQLModel, table=True):
     """Invoices issued to customers."""
     id: Optional[int] = Field(default=None, primary_key=True)
     number: str = Field(index=True, unique=True) # e.g., INV-1001
-    date: datetime = Field(default_factory=datetime.utcnow)
+    date: datetime = Field(default_factory=utc_now)
     due_date: Optional[datetime] = None
     customer_id: int = Field(foreign_key="customer.id")
     status: str = Field(default="Draft") # Draft, Sent, Paid, Cancelled
@@ -81,7 +91,7 @@ class Invoice(SQLModel, table=True):
     tax_total: float = Field(default=0.0)
     total: float = Field(default=0.0)
     notes: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
 
 class InvoiceItem(SQLModel, table=True):
     """Lines of detail in an invoice."""
@@ -104,12 +114,12 @@ class RecurringProfile(SQLModel, table=True):
     is_active: bool = Field(default=True)
     next_issue_date: datetime
     auto_send: bool = Field(default=False)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
 
 class Expense(SQLModel, table=True):
     """Business expenses linked to Chart of Accounts."""
     id: Optional[int] = Field(default=None, primary_key=True)
-    date: datetime = Field(default_factory=datetime.utcnow)
+    date: datetime = Field(default_factory=utc_now)
     description: str
     amount: float = Field(default=0.0)  # pre-tax subtotal
     tps: float = Field(default=0.0)     # TPS amount (5% of amount if applicable)
@@ -117,7 +127,7 @@ class Expense(SQLModel, table=True):
     total: float = Field(default=0.0)   # amount + tps + tvq
     account_id: int = Field(foreign_key="account.id")
     notes: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
 
 # --- Database Engine ---
 
