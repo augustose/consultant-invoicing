@@ -54,11 +54,6 @@ def _to_float(value, default: float = 0.0) -> float:
         return default
 
 
-# Tax labels that map to Québec columns. Anything else is treated as foreign.
-_TPS_ALIASES = ("tps", "gst")          # federal goods & services tax
-_TVQ_ALIASES = ("tvq", "qst")          # Québec sales tax
-
-
 # Date formats accepted from receipts, tried in order. Day-first (%d/%m/%Y) is
 # tried before month-first so unambiguous Québec/European dates win; ambiguous
 # all-numeric dates fall back to month-first only when day-first is invalid.
@@ -90,35 +85,23 @@ def parse_receipt_date(value: Optional[str]) -> Optional[datetime]:
     return None
 
 
-def reconcile_taxes(tax_lines) -> dict:
-    """Split extracted tax lines into Québec tps/tvq columns vs a foreign note.
+# Québec sales-tax rates (kept local so this module stays DB-import-free).
+QC_TPS_RATE = 0.05
+QC_TVQ_RATE = 0.09975
+QC_COMBINED_RATE = QC_TPS_RATE + QC_TVQ_RATE  # 0.14975
 
-    Québec receipts itemize TPS/TVQ (a.k.a. GST/QST) → mapped to columns.
-    Foreign taxes (VAT, sales tax, …) have no column on ClientExpense, so they
-    are preserved as a human-readable note and left inside the tax-inclusive
-    total. Nothing is ever back-computed or guessed.
+
+def split_qc_tax(tax_total) -> tuple:
+    """Split a combined Québec tax amount into (TPS, TVQ) by the standard ratio.
+
+    Works whether the receipt itemized TPS/TVQ separately or charged the single
+    combined 14.975% line — both sum to the same total and split the same way.
     """
-    result = {"tps": 0.0, "tvq": 0.0, "foreign_note": None}
-    if not tax_lines:
-        return result
-
-    foreign_parts = []
-    for line in tax_lines:
-        if not isinstance(line, dict):
-            continue
-        label = str(line.get("label") or "").strip()
-        amount = _to_float(line.get("amount"))
-        label_lc = label.lower()
-        if any(alias in label_lc for alias in _TPS_ALIASES):
-            result["tps"] += amount
-        elif any(alias in label_lc for alias in _TVQ_ALIASES):
-            result["tvq"] += amount
-        else:
-            foreign_parts.append(f"{label or 'Tax'}: {amount:.2f}")
-
-    if foreign_parts:
-        result["foreign_note"] = "Foreign tax — " + "; ".join(foreign_parts)
-    return result
+    amount = _to_float(tax_total)
+    if not amount:
+        return 0.0, 0.0
+    return (amount * QC_TPS_RATE / QC_COMBINED_RATE,
+            amount * QC_TVQ_RATE / QC_COMBINED_RATE)
 
 
 def frankfurter_rate_provider(
@@ -162,18 +145,21 @@ def map_extraction_to_expense(parsed: dict, *, rate_provider=frankfurter_rate_pr
     description = vendor or "Expense from receipt"
     date = parse_receipt_date(parsed.get("date"))
 
-    amount = _to_float(parsed.get("subtotal"))
+    amount = _to_float(parsed.get("subtotal"))      # pre-tax
+    tax_total = _to_float(parsed.get("tax_total"))
     total = _to_float(parsed.get("total"))
-    taxes = reconcile_taxes(parsed.get("tax_lines"))
-    tps, tvq = taxes["tps"], taxes["tvq"]
-    if taxes["foreign_note"]:
-        notes_parts.append(taxes["foreign_note"])
+
+    # Reconstruct any one missing figure from the other two (subtotal + tax = total).
+    if not total and (amount or tax_total):
+        total = amount + tax_total
+    if not amount and total:
+        amount = total - tax_total
 
     currency = str(parsed.get("currency") or "CAD").strip().upper() or "CAD"
     if currency != "CAD":
         rate = rate_provider(currency, date)
         if rate is not None:
-            amount, tps, tvq, total = (v * rate for v in (amount, tps, tvq, total))
+            amount, tax_total, total = (v * rate for v in (amount, tax_total, total))
             rate_day = date.strftime("%Y-%m-%d") if date else "latest"
             notes_parts.append(
                 f"Converted from {currency} · rate {rate:g} CAD/{currency} "
@@ -186,9 +172,17 @@ def map_extraction_to_expense(parsed: dict, *, rate_provider=frankfurter_rate_pr
                 "please convert/enter manually."
             )
 
-    # Taxes were not itemized: there is a total but no subtotal/tax split.
-    if total and not amount and tps == 0.0 and tvq == 0.0:
-        warnings.append("Taxes not detected — fill in or split manually.")
+    # Québec receipts: split the combined tax into TPS/TVQ. Foreign receipts have
+    # no QC columns, so leave tps/tvq at 0 and note the foreign tax (in CAD).
+    if currency == "CAD":
+        tps, tvq = split_qc_tax(tax_total)
+    else:
+        tps, tvq = 0.0, 0.0
+        if tax_total:
+            notes_parts.append(f"Foreign tax (converted): {tax_total:.2f} CAD")
+
+    if total and not tax_total:
+        warnings.append("No tax detected — verify the tax amount.")
     if date is None:
         warnings.append("Date not detected — please enter it.")
 
@@ -215,26 +209,27 @@ RECEIPT_SCHEMA = {
         "vendor": {"type": ["string", "null"]},
         "date": {"type": ["string", "null"]},
         "subtotal": {"type": ["number", "null"]},
+        "tax_total": {"type": ["number", "null"]},
         "total": {"type": ["number", "null"]},
         "currency": {"type": ["string", "null"]},
-        "tax_lines": {
-            "type": ["array", "null"],
-            "items": {
-                "type": "object",
-                "properties": {
-                    "label": {"type": ["string", "null"]},
-                    "amount": {"type": ["number", "null"]},
-                },
-            },
-        },
     },
 }
 
 RECEIPT_PROMPT = (
-    "You are reading a scanned expense receipt. Extract the vendor name, the "
-    "purchase date, the pre-tax subtotal, every tax line (label and amount), the "
-    "grand total, and the currency code. Use null for anything not clearly "
-    "visible. Do not guess or compute missing values."
+    "You are extracting data from a single purchase receipt or invoice. "
+    "Return only values that are printed; use null when something is not present. "
+    "Do not guess.\n"
+    "- vendor: the business that ISSUED the invoice (the seller / company at the "
+    "top, e.g. next to the logo). This is NOT the 'Bill to' / 'Sold to' customer.\n"
+    "- date: the invoice or purchase date (date of issue).\n"
+    "- subtotal: the pre-tax amount (often labelled 'Subtotal' or 'Total "
+    "excluding tax').\n"
+    "- tax_total: the total of ALL taxes charged. If TPS/GST and TVQ/QST are "
+    "listed separately, add them; if a single combined tax line is shown, use it.\n"
+    "- total: the final grand total actually due (often labelled 'Total' or "
+    "'Amount due'), taxes included.\n"
+    "- currency: the ISO currency code (CAD, USD, EUR, …). 'CA$' or 'C$' means CAD; "
+    "a plain '$' on a Canadian invoice usually means CAD."
 )
 
 

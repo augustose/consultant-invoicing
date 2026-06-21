@@ -27,44 +27,21 @@ def test_parse_receipt_date_unparseable_returns_none():
     assert parse_receipt_date("") is None
 
 
-# --- reconcile_taxes ----------------------------------------------------
+# --- split_qc_tax -------------------------------------------------------
 
-def test_reconcile_taxes_quebec_tps_tvq():
-    from ollama_utils import reconcile_taxes
-    out = reconcile_taxes([
-        {"label": "TPS", "amount": 5.0},
-        {"label": "TVQ", "amount": 9.98},
-    ])
-    assert out["tps"] == pytest.approx(5.0)
-    assert out["tvq"] == pytest.approx(9.98)
-    assert out["foreign_note"] is None
+def test_split_qc_tax_splits_combined_rate():
+    from ollama_utils import split_qc_tax
+    # A combined 14.975% tax of 16.85 splits into TPS (5%) + TVQ (9.975%).
+    tps, tvq = split_qc_tax(16.85)
+    assert tps == pytest.approx(16.85 * 0.05 / 0.14975)
+    assert tvq == pytest.approx(16.85 * 0.09975 / 0.14975)
+    assert tps + tvq == pytest.approx(16.85)
 
 
-def test_reconcile_taxes_gst_qst_aliases():
-    from ollama_utils import reconcile_taxes
-    out = reconcile_taxes([
-        {"label": "GST", "amount": 5.0},
-        {"label": "QST", "amount": 9.98},
-    ])
-    assert out["tps"] == pytest.approx(5.0)
-    assert out["tvq"] == pytest.approx(9.98)
-    assert out["foreign_note"] is None
-
-
-def test_reconcile_taxes_foreign_tax_goes_to_note_not_columns():
-    from ollama_utils import reconcile_taxes
-    out = reconcile_taxes([{"label": "VAT 20%", "amount": 8.33}])
-    assert out["tps"] == 0.0
-    assert out["tvq"] == 0.0
-    assert "VAT 20%" in out["foreign_note"]
-    assert "8.33" in out["foreign_note"]
-
-
-def test_reconcile_taxes_empty_or_none():
-    from ollama_utils import reconcile_taxes
-    for arg in ([], None):
-        out = reconcile_taxes(arg)
-        assert out == {"tps": 0.0, "tvq": 0.0, "foreign_note": None}
+def test_split_qc_tax_zero():
+    from ollama_utils import split_qc_tax
+    assert split_qc_tax(0) == (0.0, 0.0)
+    assert split_qc_tax(None) == (0.0, 0.0)
 
 
 # --- frankfurter_rate_provider ------------------------------------------
@@ -110,30 +87,38 @@ def _rate(value):
     return lambda currency, on_date: value
 
 
-def test_map_quebec_cad_receipt_fills_columns_directly():
+def test_map_quebec_cad_receipt_splits_combined_tax():
     from ollama_utils import map_extraction_to_expense
+    # The real Anthropic CA invoice: one combined 14.975% tax line.
     parsed = {
-        "vendor": "Cafe Parvis", "date": "2026-06-18", "subtotal": 100.0,
-        "tax_lines": [{"label": "TPS", "amount": 5.0},
-                      {"label": "TVQ", "amount": 9.98}],
-        "total": 114.98, "currency": "CAD",
+        "vendor": "Anthropic, PBC", "date": "March 27, 2026",
+        "subtotal": 112.51, "tax_total": 16.85, "total": 129.36, "currency": "CAD",
     }
     out = map_extraction_to_expense(parsed, rate_provider=_rate(1.0))
-    assert "Cafe Parvis" in out["description"]
-    assert out["date"] == datetime(2026, 6, 18)
-    assert out["amount"] == pytest.approx(100.0)
-    assert out["tps"] == pytest.approx(5.0)
-    assert out["tvq"] == pytest.approx(9.98)
-    assert out["total"] == pytest.approx(114.98)
+    assert "Anthropic" in out["description"]
+    assert out["date"] == datetime(2026, 3, 27)
+    assert out["amount"] == pytest.approx(112.51)
+    assert out["tps"] == pytest.approx(16.85 * 0.05 / 0.14975, abs=0.01)
+    assert out["tvq"] == pytest.approx(16.85 * 0.09975 / 0.14975, abs=0.01)
+    assert out["total"] == pytest.approx(129.36)
     assert out["warnings"] == []
+
+
+def test_map_reconstructs_missing_total_from_subtotal_and_tax():
+    from ollama_utils import map_extraction_to_expense
+    parsed = {
+        "vendor": "Shop", "date": "2026-06-18", "subtotal": 100.0,
+        "tax_total": 14.98, "total": None, "currency": "CAD",
+    }
+    out = map_extraction_to_expense(parsed, rate_provider=_rate(1.0))
+    assert out["total"] == pytest.approx(114.98)
 
 
 def test_map_foreign_receipt_converts_and_notes_original():
     from ollama_utils import map_extraction_to_expense
     parsed = {
         "vendor": "Hotel Paris", "date": "2026-06-18", "subtotal": 40.0,
-        "tax_lines": [{"label": "VAT 20%", "amount": 8.0}],
-        "total": 48.0, "currency": "EUR",
+        "tax_total": 8.0, "total": 48.0, "currency": "EUR",
     }
     out = map_extraction_to_expense(parsed, rate_provider=_rate(1.5))
     # amounts converted to CAD
@@ -144,14 +129,13 @@ def test_map_foreign_receipt_converts_and_notes_original():
     # original currency + rate + foreign tax preserved in notes
     assert "EUR" in out["notes"]
     assert "1.5" in out["notes"]
-    assert "VAT 20%" in out["notes"]
 
 
 def test_map_foreign_receipt_rate_unavailable_falls_back_to_raw_with_warning():
     from ollama_utils import map_extraction_to_expense
     parsed = {
         "vendor": "Hotel Paris", "date": "2026-06-18", "subtotal": 40.0,
-        "tax_lines": [], "total": 48.0, "currency": "EUR",
+        "tax_total": 0.0, "total": 48.0, "currency": "EUR",
     }
     out = map_extraction_to_expense(parsed, rate_provider=_rate(None))
     # not converted — raw figures kept
@@ -165,11 +149,10 @@ def test_map_total_only_receipt_warns_taxes_not_detected():
     from ollama_utils import map_extraction_to_expense
     parsed = {
         "vendor": "Corner Shop", "date": None, "subtotal": None,
-        "tax_lines": None, "total": 30.0, "currency": "CAD",
+        "tax_total": None, "total": 30.0, "currency": "CAD",
     }
     out = map_extraction_to_expense(parsed, rate_provider=_rate(1.0))
     assert out["total"] == pytest.approx(30.0)
-    assert out["amount"] == 0.0
     assert out["tps"] == 0.0 and out["tvq"] == 0.0
     assert out["date"] is None
     assert any("tax" in w.lower() for w in out["warnings"])
