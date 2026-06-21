@@ -1373,12 +1373,48 @@ def client_expenses_page():
                         'followup': client_expense_needs_followup(exp.status, last, today),
                     })
                 cust_opts_js = json.dumps([{'label': n, 'value': cid} for cid, n in cust_opts.items()])
+
+                def _perform_delete(ids):
+                    with Session(engine) as s:
+                        result = delete_client_expenses(s, ids)
+                    for p in result['deleted_paths']:
+                        for fp in (p, p + '.thumb.png'):
+                            try:
+                                if os.path.exists(fp):
+                                    os.remove(fp)
+                            except OSError:
+                                pass
+                    msg = f"Deleted {result['deleted']} expense(s)."
+                    if result['skipped']:
+                        msg += f" {result['skipped']} attached to an invoice were kept."
+                    ui.notify(msg, color='emerald-500' if result['deleted'] else 'amber-500')
+                    refresh_table()
+
+                def do_delete_selected():
+                    ids = [r['id'] for r in tbl.selected]
+                    if not ids:
+                        ui.notify('Select one or more rows to delete first', color='amber-500')
+                        return
+                    with ui.dialog() as confirm, ui.card().classes('p-6 premium-card'):
+                        ui.label(f'Delete {len(ids)} selected expense(s)?').classes('text-lg font-bold')
+                        ui.label('This permanently removes them and their receipts. '
+                                 'Expenses attached to an invoice are kept.').classes('text-sm text-slate-500 mt-1')
+                        with ui.row().classes('w-full justify-end gap-2 mt-5'):
+                            ui.button('Cancel', on_click=confirm.close).props('flat').classes('text-slate-400')
+                            ui.button('Delete', color='red',
+                                      on_click=lambda: (confirm.close(), _perform_delete(ids))).props('unelevated')
+                    confirm.open()
+
                 with ui.card().classes('w-full p-0 premium-card overflow-hidden'):
-                    tbl = ui.table(columns=cols, rows=rows, row_key='id').classes('w-full border-none shadow-none')
+                    with ui.row().classes('w-full items-center gap-3 px-4 pt-3'):
+                        ui.label('Select rows to reassign or delete').classes('text-xs text-slate-400')
+                        ui.button('Delete selected', icon='delete', color='red',
+                                  on_click=do_delete_selected).props('flat dense no-caps').classes('ml-auto')
+                    tbl = ui.table(columns=cols, rows=rows, row_key='id', selection='multiple').classes('w-full border-none shadow-none')
                     tbl.add_slot('body-cell-status', '''<q-td :props="props"><q-badge :color="{'pending':'amber-500','claimed':'indigo-500','waiting':'orange-500','disputed':'red-500','reimbursed':'emerald-500','written_off':'slate-500'}[props.row.status] || 'slate-500'" :style="{padding:'6px 14px',borderRadius:'100px',fontWeight:'700',fontSize:'10px'}">{{ props.row.status }}</q-badge></q-td>''')
                     tbl.add_slot('body-cell-aging', '''<q-td :props="props"><span :class="props.row.followup ? 'text-red-500 font-bold' : 'text-slate-500'">{{ props.row.aging }}<q-icon v-if="props.row.followup" name="warning" class="q-ml-xs" /></span></q-td>''')
                     tbl.add_slot('body-cell-customer', f'''<q-td :props="props"><q-select dense options-dense borderless emit-value map-options :model-value="props.row.customer_id" :options='{cust_opts_js}' @update:model-value="val => $parent.$emit('reassign', {{id: props.row.id, customer_id: val}})" style="min-width:150px" /></q-td>''')
-                    tbl.add_slot('body-cell-receipt', '''<q-td :props="props"><q-img v-if="props.row.preview" :src="props.row.preview" style="width:36px;height:36px;border-radius:6px;cursor:pointer" @click="$parent.$emit('preview', props.row.preview)"><q-tooltip>Click to enlarge</q-tooltip></q-img></q-td>''')
+                    tbl.add_slot('body-cell-receipt', '''<q-td :props="props"><img v-if="props.row.preview" :src="props.row.preview" style="width:40px;height:40px;object-fit:cover;border-radius:6px;cursor:pointer;border:1px solid #e2e8f0" @click="$parent.$emit('preview', props.row.preview)"><q-tooltip v-if="props.row.preview">Click to enlarge</q-tooltip></q-td>''')
                     tbl.add_slot('body-cell-flags', '''<q-td :props="props"><q-badge v-if="props.row.is_dup" color="amber-600" :style="{padding:'5px 10px',borderRadius:'100px',fontWeight:'700',fontSize:'9px'}">DUP<q-tooltip>Same date &amp; total as another expense — possible duplicate</q-tooltip></q-badge></q-td>''')
                     tbl.add_slot('body-cell-actions', '''<q-td :props="props"><q-btn flat round icon="open_in_full" title="Details" @click="$parent.$emit('detail', props.row.id)" /><q-btn v-if="props.row.has_receipt" flat round color="indigo-600" icon="download" title="Download receipt" @click="$parent.$emit('receipt', props.row.id)" /></q-td>''')
                     tbl.on('detail', lambda e: open_detail(e.args))
@@ -2641,6 +2677,35 @@ def transition_client_expense(session, expense_id, target, notes=None, now=None)
     session.commit()
     session.refresh(expense)
     return expense
+
+
+def delete_client_expenses(session, ids):
+    """Delete client expenses and their events. Skips invoice-attached ones.
+
+    Returns {'deleted': int, 'skipped': int, 'deleted_paths': [receipt_path,...]}.
+    `deleted_paths` lets the caller clean up receipt files on disk. Expenses
+    attached to an invoice are never deleted (would orphan an invoice line).
+    """
+    deleted = skipped = 0
+    deleted_paths = []
+    for expense_id in ids:
+        expense = session.get(ClientExpense, expense_id)
+        if expense is None:
+            continue
+        if expense.invoice_id is not None:
+            skipped += 1
+            continue
+        events = session.exec(
+            select(ClientExpenseEvent).where(ClientExpenseEvent.client_expense_id == expense_id)
+        ).all()
+        for ev in events:
+            session.delete(ev)
+        if expense.receipt_path:
+            deleted_paths.append(expense.receipt_path)
+        session.delete(expense)
+        deleted += 1
+    session.commit()
+    return {'deleted': deleted, 'skipped': skipped, 'deleted_paths': deleted_paths}
 
 
 def reassign_client_expense_customer(session, expense_id, customer_id):

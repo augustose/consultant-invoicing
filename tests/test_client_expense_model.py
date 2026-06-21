@@ -180,6 +180,49 @@ def test_flag_duplicates_none_when_all_distinct():
     assert flag_duplicate_expense_ids(exps) == set()
 
 
+def test_delete_client_expenses_removes_expense_and_events(session):
+    from main import delete_client_expenses
+
+    s, cust_id = session
+    exp = ClientExpense(customer_id=cust_id, description="x", amount=10.0, total=10.0,
+                        receipt_path="data/receipts/9_x.png")
+    s.add(exp)
+    s.commit()
+    s.refresh(exp)
+    s.add(ClientExpenseEvent(client_expense_id=exp.id, status="pending"))
+    s.commit()
+    exp_id = exp.id
+
+    result = delete_client_expenses(s, [exp_id])
+
+    assert result["deleted"] == 1
+    assert result["skipped"] == 0
+    assert "data/receipts/9_x.png" in result["deleted_paths"]
+    assert s.get(ClientExpense, exp_id) is None
+    remaining_events = s.exec(
+        select(ClientExpenseEvent).where(ClientExpenseEvent.client_expense_id == exp_id)
+    ).all()
+    assert remaining_events == []
+
+
+def test_delete_client_expenses_skips_invoice_attached(session):
+    from main import delete_client_expenses
+
+    s, cust_id = session
+    exp = ClientExpense(customer_id=cust_id, description="x", amount=10.0, total=10.0,
+                        invoice_id=123)
+    s.add(exp)
+    s.commit()
+    s.refresh(exp)
+    exp_id = exp.id
+
+    result = delete_client_expenses(s, [exp_id])
+
+    assert result["deleted"] == 0
+    assert result["skipped"] == 1
+    assert s.get(ClientExpense, exp_id) is not None  # still there
+
+
 def test_reassign_client_expense_customer_updates_customer(session):
     from main import reassign_client_expense_customer
 
