@@ -27,6 +27,19 @@ def test_parse_receipt_date_unparseable_returns_none():
     assert parse_receipt_date("") is None
 
 
+# --- _to_float ----------------------------------------------------------
+
+def test_to_float_handles_currency_prefixed_strings():
+    from ollama_utils import _to_float
+    assert _to_float("CA$112.51") == pytest.approx(112.51)
+    assert _to_float("US$1,234.50") == pytest.approx(1234.50)
+    assert _to_float("-CA$27.49") == pytest.approx(-27.49)
+    assert _to_float("€40") == pytest.approx(40.0)
+    assert _to_float(129.36) == pytest.approx(129.36)
+    assert _to_float(None) == 0.0
+    assert _to_float("n/a") == 0.0
+
+
 # --- normalize_currency -------------------------------------------------
 
 def test_normalize_currency_variants():

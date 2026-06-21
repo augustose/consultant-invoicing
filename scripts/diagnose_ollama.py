@@ -19,7 +19,7 @@ import ollama_utils
 from ollama_utils import (
     list_models, probe_model_is_vision, normalize_to_image,
     parse_extraction_response, map_extraction_to_expense,
-    RECEIPT_PROMPT, RECEIPT_SCHEMA,
+    RECEIPT_PROMPT,
 )
 
 
@@ -61,8 +61,7 @@ def main():
     gen_url = f"{url.rstrip('/')}/api/generate"
     payload = {
         "model": model, "prompt": RECEIPT_PROMPT, "images": [b64],
-        "stream": False, "format": RECEIPT_SCHEMA,
-        "options": {"temperature": 0},
+        "stream": False, "options": {"temperature": 0},
     }
     t0 = time.time()
     try:

@@ -9,6 +9,7 @@ See docs/plans/2026-06-20-ollama-receipt-extraction-design.md for the design.
 from __future__ import annotations
 
 import json
+import re
 import urllib.request
 from datetime import datetime
 from typing import Optional
@@ -34,24 +35,26 @@ def _default_http_post_json(url: str, payload: dict, timeout: float = 60.0) -> d
 
 
 def _to_float(value, default: float = 0.0) -> float:
-    """Coerce a model-supplied number (which may be a string) to float."""
+    """Coerce a model-supplied number to float, tolerating currency strings.
+
+    Handles forms like "CA$112.51", "US$1,234.50", "-CA$27.49", "€40" by pulling
+    out the first numeric run and applying a leading minus if one precedes it.
+    """
     if value is None:
         return default
     if isinstance(value, (int, float)):
         return float(value)
-    try:
-        # Tolerate currency symbols, thousands separators and stray spaces.
-        cleaned = (
-            str(value)
-            .replace("$", "")
-            .replace("€", "")
-            .replace("£", "")
-            .replace(",", "")
-            .strip()
-        )
-        return float(cleaned)
-    except (TypeError, ValueError):
+    s = str(value)
+    match = re.search(r"\d[\d,]*\.?\d*", s)
+    if not match:
         return default
+    try:
+        num = float(match.group(0).replace(",", ""))
+    except ValueError:
+        return default
+    if "-" in s[:match.start()]:
+        num = -num
+    return num
 
 
 # Date formats accepted from receipts, tried in order. Day-first (%d/%m/%Y) is
@@ -238,19 +241,9 @@ def map_extraction_to_expense(parsed: dict, *, rate_provider=frankfurter_rate_pr
 
 # --- Ollama HTTP boundary ------------------------------------------------
 
-# JSON schema requested from Ollama so the model returns structured data, not
-# prose. `null` is allowed everywhere so the model never has to invent a value.
-RECEIPT_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "vendor": {"type": ["string", "null"]},
-        "date": {"type": ["string", "null"]},
-        "subtotal": {"type": ["number", "null"]},
-        "tax_total": {"type": ["number", "null"]},
-        "total": {"type": ["number", "null"]},
-        "currency": {"type": ["string", "null"]},
-    },
-}
+# NOTE: we deliberately do NOT send Ollama's structured-output `format` schema.
+# Constrained decoding made vision models (qwen2.5vl, minicpm-v) emit null/garbage
+# numbers; free-form generation + tolerant JSON parsing reads receipts far better.
 
 RECEIPT_PROMPT = (
     "You are extracting data from a single purchase receipt or invoice. "
@@ -266,7 +259,9 @@ RECEIPT_PROMPT = (
     "- total: the final grand total actually due (often labelled 'Total' or "
     "'Amount due'), taxes included.\n"
     "- currency: the ISO currency code (CAD, USD, EUR, …). 'CA$' or 'C$' means CAD; "
-    "a plain '$' on a Canadian invoice usually means CAD."
+    "a plain '$' on a Canadian invoice usually means CAD.\n\n"
+    "Respond with ONLY a JSON object with exactly these keys: "
+    "vendor, date, subtotal, tax_total, total, currency."
 )
 
 
@@ -351,7 +346,6 @@ def extract_receipt(
         "prompt": RECEIPT_PROMPT,
         "images": [image_b64],
         "stream": False,
-        "format": RECEIPT_SCHEMA,
         "options": {"temperature": 0},  # greedy/deterministic — fewer hallucinated numbers
     }
     parsed = parse_extraction_response(http_post_json(url, payload))
