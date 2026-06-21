@@ -180,6 +180,50 @@ def test_flag_duplicates_none_when_all_distinct():
     assert flag_duplicate_expense_ids(exps) == set()
 
 
+def test_filter_client_expenses_by_any_workflow_status():
+    from types import SimpleNamespace
+    from main import filter_client_expenses
+
+    exps = [
+        SimpleNamespace(id=1, customer_id=1, status="pending", total=10.0),
+        SimpleNamespace(id=2, customer_id=1, status="disputed", total=20.0),
+        SimpleNamespace(id=3, customer_id=1, status="reimbursed", total=30.0),
+    ]
+
+    assert [e.id for e in filter_client_expenses(exps, {"status": "disputed"})] == [2]
+    assert [e.id for e in filter_client_expenses(exps, {"status": "reimbursed"})] == [3]
+
+
+def test_filter_client_expenses_by_total_range():
+    from types import SimpleNamespace
+    from main import filter_client_expenses
+
+    exps = [
+        SimpleNamespace(id=1, customer_id=1, status="pending", total=9.99),
+        SimpleNamespace(id=2, customer_id=1, status="pending", total=25.0),
+        SimpleNamespace(id=3, customer_id=1, status="pending", total=50.0),
+    ]
+
+    result = filter_client_expenses(exps, {"min_total": 10, "max_total": 25})
+
+    assert [e.id for e in result] == [2]
+
+
+def test_filter_client_expenses_by_duplicate_total_shortcut():
+    from types import SimpleNamespace
+    from main import filter_client_expenses
+
+    exps = [
+        SimpleNamespace(id=1, customer_id=1, status="pending", total=14.975),
+        SimpleNamespace(id=2, customer_id=2, status="claimed", total=14.98),
+        SimpleNamespace(id=3, customer_id=1, status="waiting", total=20.0),
+    ]
+
+    result = filter_client_expenses(exps, {"duplicate_total": 14.98})
+
+    assert [e.id for e in result] == [1, 2]
+
+
 def test_delete_client_expenses_removes_expense_and_events(session):
     from main import delete_client_expenses
 

@@ -1,6 +1,7 @@
 import calendar
 import re
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from nicegui import app, ui, run
 from sqlmodel import Session, select
 from starlette.responses import HTMLResponse, Response
@@ -92,6 +93,14 @@ def client_expense_needs_followup(status, last_change, today, threshold=FOLLOWUP
     return (today - last_change).days > threshold
 
 
+def currency_cents(value):
+    """Currency comparison key using normal half-up cent rounding."""
+    try:
+        return int((Decimal(str(value or 0)) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    except (InvalidOperation, ValueError):
+        return 0
+
+
 def receipt_preview_url(receipt_path):
     """Return a `/receipts/...` URL to preview a receipt, or None.
 
@@ -128,12 +137,48 @@ def flag_duplicate_expense_ids(expenses):
         if not exp.total:
             continue
         day = exp.date.date() if hasattr(exp.date, "date") else exp.date
-        groups[(day, round(exp.total, 2))].append(exp.id)
+        groups[(day, currency_cents(exp.total))].append(exp.id)
     flagged = set()
     for ids in groups.values():
         if len(ids) > 1:
             flagged.update(ids)
     return flagged
+
+
+def _optional_float(value):
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def filter_client_expenses(expenses, filters):
+    """Apply list-page filters to client expenses while preserving row order."""
+    customer = filters.get("customer", "All")
+    status = filters.get("status", "All")
+    min_total = _optional_float(filters.get("min_total"))
+    max_total = _optional_float(filters.get("max_total"))
+    duplicate_total = _optional_float(filters.get("duplicate_total"))
+
+    filtered = list(expenses)
+
+    if customer != "All":
+        filtered = [exp for exp in filtered if getattr(exp, "customer_id", None) == customer]
+    if status != "All":
+        filtered = [exp for exp in filtered if getattr(exp, "status", None) == status]
+    if min_total is not None:
+        filtered = [exp for exp in filtered if (getattr(exp, "total", 0) or 0) >= min_total]
+    if max_total is not None:
+        filtered = [exp for exp in filtered if (getattr(exp, "total", 0) or 0) <= max_total]
+    if duplicate_total is not None:
+        filtered = [
+            exp for exp in filtered
+            if currency_cents(getattr(exp, "total", 0)) == currency_cents(duplicate_total)
+        ]
+
+    return filtered
 
 
 def sanitize_receipt_filename(name):
@@ -1221,14 +1266,34 @@ def client_expenses_page():
                 ui.button('Add Expense', icon='add', on_click=save_expense).classes('btn-primary h-10 px-6 ml-auto')
 
         # ── Filters ──
-        filter_state = {'customer': 'All', 'status': 'All'}
+        filter_state = {'customer': 'All', 'status': 'All', 'min_total': None, 'max_total': None, 'duplicate_total': None}
         with ui.card().classes('w-full p-4 premium-card mb-4'):
             with ui.row().classes('w-full items-center gap-3 flex-wrap'):
                 ui.label('Filter:').classes('text-sm font-semibold text-slate-500 mr-2')
                 cust_filter = ui.select({'All': 'All customers', **customer_options}, value='All').props('dense outlined').classes('w-56')
                 status_filter = ui.select(['All', *CLIENT_EXPENSE_STATUSES], value='All').props('dense outlined').classes('w-44')
+                amount_min_filter = ui.number('Min total', value=None, min=0, step=0.01, format='%.2f').props('dense outlined prefix=$').classes('w-36')
+                amount_max_filter = ui.number('Max total', value=None, min=0, step=0.01, format='%.2f').props('dense outlined prefix=$').classes('w-36')
+
+                def update_filter(key, value):
+                    filter_state[key] = value
+                    if key in {'min_total', 'max_total'}:
+                        filter_state['duplicate_total'] = None
+                    refresh_table()
+
+                def clear_filters():
+                    filter_state.update(customer='All', status='All', min_total=None, max_total=None, duplicate_total=None)
+                    cust_filter.value = 'All'
+                    status_filter.value = 'All'
+                    amount_min_filter.value = None
+                    amount_max_filter.value = None
+                    refresh_table()
+
                 cust_filter.on_value_change(lambda e: (filter_state.update(customer=e.value), refresh_table()))
                 status_filter.on_value_change(lambda e: (filter_state.update(status=e.value), refresh_table()))
+                amount_min_filter.on_value_change(lambda e: update_filter('min_total', e.value))
+                amount_max_filter.on_value_change(lambda e: update_filter('max_total', e.value))
+                ui.button('Clear', icon='backspace', on_click=clear_filters).props('flat dense no-caps').classes('text-slate-500')
 
         table_container = ui.column().classes('w-full')
 
@@ -1360,19 +1425,24 @@ def client_expenses_page():
                     'max-width:85vw;max-height:85vh;display:block;border-radius:8px')
             d.open()
 
+        def filter_by_duplicate_total(total):
+            filter_state.update(customer='All', status='All', min_total=total, max_total=total, duplicate_total=total)
+            cust_filter.value = 'All'
+            status_filter.value = 'All'
+            amount_min_filter.value = total
+            amount_max_filter.value = total
+            ui.notify(f'Filtering possible duplicates at ${total:,.2f}', color='amber-600')
+            refresh_table()
+
         def refresh_table():
             table_container.clear()
             with Session(engine) as s:
                 customers_now = s.exec(select(Customer)).all()
-                query = select(ClientExpense)
-                if filter_state['customer'] != 'All':
-                    query = query.where(ClientExpense.customer_id == filter_state['customer'])
-                if filter_state['status'] != 'All':
-                    query = query.where(ClientExpense.status == filter_state['status'])
-                expenses = s.exec(query.order_by(ClientExpense.date.desc())).all()
+                expenses_all = s.exec(select(ClientExpense).order_by(ClientExpense.date.desc())).all()
+                dup_ids = flag_duplicate_expense_ids(expenses_all)
+                expenses = filter_client_expenses(expenses_all, filter_state)
                 last_changes = {e.id: _client_expense_last_change(s, e) for e in expenses}
             cust_opts = {c.id: c.name for c in customers_now}
-            dup_ids = flag_duplicate_expense_ids(expenses)
             with table_container:
                 if not expenses:
                     with ui.card().classes('w-full p-10 premium-card items-center justify-center'):
@@ -1400,6 +1470,7 @@ def client_expenses_page():
                         'customer_id': exp.customer_id,
                         'cname': cust_opts.get(exp.customer_id, '?'),
                         'description': exp.description,
+                        'total': exp.total,
                         'total_fmt': f'${exp.total:,.2f}',
                         'status': exp.status,
                         'aging': f'{days}d',
@@ -1451,12 +1522,13 @@ def client_expenses_page():
                     tbl.add_slot('body-cell-aging', '''<q-td :props="props"><span :class="props.row.followup ? 'text-red-500 font-bold' : 'text-slate-500'">{{ props.row.aging }}<q-icon v-if="props.row.followup" name="warning" class="q-ml-xs" /></span></q-td>''')
                     tbl.add_slot('body-cell-customer', f'''<q-td :props="props"><q-select dense options-dense borderless emit-value map-options :model-value="props.row.customer_id" :options='{cust_opts_js}' @update:model-value="val => $parent.$emit('reassign', {{id: props.row.id, customer_id: val}})" style="min-width:150px" /></q-td>''')
                     tbl.add_slot('body-cell-receipt', '''<q-td :props="props"><img v-if="props.row.preview" :src="props.row.preview" style="width:40px;height:40px;min-width:40px;max-width:40px;object-fit:cover;border-radius:6px;cursor:pointer;border:1px solid #e2e8f0" @click="$parent.$emit('preview', props.row.preview)"><q-tooltip v-if="props.row.preview">Click to enlarge</q-tooltip></q-td>''')
-                    tbl.add_slot('body-cell-flags', '''<q-td :props="props"><q-badge v-if="props.row.is_dup" color="amber-600" :style="{padding:'5px 10px',borderRadius:'100px',fontWeight:'700',fontSize:'9px'}">DUP<q-tooltip>Same date &amp; total as another expense — possible duplicate</q-tooltip></q-badge></q-td>''')
+                    tbl.add_slot('body-cell-flags', '''<q-td :props="props"><q-badge v-if="props.row.is_dup" color="amber-600" :style="{padding:'5px 10px',borderRadius:'100px',fontWeight:'700',fontSize:'9px',cursor:'pointer'}" @click.stop="$parent.$emit('duplicate-total', props.row.total)">DUP<q-tooltip>Filter all expenses with this same total</q-tooltip></q-badge></q-td>''')
                     tbl.add_slot('body-cell-actions', '''<q-td :props="props"><q-btn flat round icon="open_in_full" title="Details" @click="$parent.$emit('detail', props.row.id)" /><q-btn v-if="props.row.has_receipt" flat round color="indigo-600" icon="download" title="Download receipt" @click="$parent.$emit('receipt', props.row.id)" /></q-td>''')
                     tbl.on('detail', lambda e: open_detail(e.args))
                     tbl.on('receipt', lambda e: open_receipt(e.args))
                     tbl.on('reassign', lambda e: do_reassign(e.args['id'], e.args['customer_id']))
                     tbl.on('preview', lambda e: open_preview(e.args))
+                    tbl.on('duplicate-total', lambda e: filter_by_duplicate_total(e.args))
 
         refresh_table()
 
