@@ -13,7 +13,7 @@ from loguru import logger
 import os, json, csv, base64
 from ollama_utils import (
     ollama_is_ready, list_models, probe_model_is_vision,
-    normalize_to_image, extract_receipt,
+    normalize_to_image, extract_receipt, read_upload_file,
 )
 import plotly.graph_objects as go
 from collections import defaultdict
@@ -1031,50 +1031,58 @@ def client_expenses_page():
                 day_input.bind_visibility_from(recurring_check, 'value')
                 notes_input = ui.input('Notes (optional)').props('dense outlined').classes('flex-1 min-w-48')
 
-            with ui.row().classes('w-full items-center gap-4 mt-3 flex-wrap'):
-                def on_receipt_upload(e):
-                    pending_receipt['name'] = e.name
-                    pending_receipt['content'] = e.content.read()
-                    ui.notify(f'Receipt "{e.name}" attached', color='indigo-500')
-                ui.upload(on_upload=on_receipt_upload, label='Attach receipt (optional)', auto_upload=True).props('flat color=indigo-600').classes('max-w-xs')
+            # ── Receipt upload (single control; auto-fills with AI when configured) ──
+            def _do_extract(content, name):
+                image_bytes = normalize_to_image(content, name)
+                b64 = base64.b64encode(image_bytes).decode('ascii')
+                return extract_receipt(ollama_url, ollama_model, b64)
 
-                # Optional AI auto-fill: only shown when an Ollama server + model
-                # are configured. The manual flow above is untouched without it.
+            async def on_receipt_upload(e):
+                try:
+                    name, content = await read_upload_file(e.file)
+                    logger.info(f"[receipt] upload received: name={name} ai_ready={ai_ready}")
+                    pending_receipt['name'] = name
+                    pending_receipt['content'] = content
+                    if not ai_ready:
+                        ui.notify(f'Receipt "{name}" attached', color='indigo-500')
+                        return
+                    progress = ui.notification('Reading receipt with AI…', spinner=True, timeout=None)
+                    try:
+                        data = await run.io_bound(_do_extract, content, name)
+                    except Exception as ex:
+                        logger.warning(f"[receipt] extraction failed: {ex!r}")
+                        progress.dismiss()
+                        ui.notify(f'Receipt "{name}" attached, but AI could not read it — '
+                                  'please fill the form manually.', color='amber-500')
+                        return
+                    logger.info(f"[receipt] extract OK: amount={data['amount']} "
+                                f"total={data['total']} date={data['date']}")
+                    if data['date']:
+                        date_input.value = data['date'].strftime('%Y-%m-%d')
+                    desc_input.value = data['description']
+                    amount_input.value = data['amount'] or data['total']
+                    tps_check.value = data['tps'] > 0
+                    tvq_check.value = data['tvq'] > 0
+                    notes_input.value = data['notes']
+                    update_total()
+                    progress.dismiss()
+                    logger.info("[receipt] form fields updated")
+                    msg = f'Receipt "{name}" read — review every field, then Add Expense.'
+                    if data['warnings']:
+                        msg += ' ⚠ ' + ' '.join(data['warnings'])
+                    ui.notify(msg, color='emerald-500', multi_line=True, timeout=8000)
+                except Exception as ex:
+                    logger.exception(f"[receipt] UNEXPECTED handler error: {ex!r}")
+                    ui.notify(f'Receipt error: {ex}', color='red-500')
+
+            with ui.column().classes('w-full gap-1 mt-3'):
                 if ai_ready:
-                    def _do_extract(content, name):
-                        image_bytes = normalize_to_image(content, name)
-                        b64 = base64.b64encode(image_bytes).decode('ascii')
-                        return extract_receipt(ollama_url, ollama_model, b64)
-
-                    async def on_autofill_upload(e):
-                        content = e.content.read()
-                        name = e.name
-                        # The uploaded file also becomes the attached receipt.
-                        pending_receipt['name'] = name
-                        pending_receipt['content'] = content
-                        ui.notify('Reading receipt with AI…', color='indigo-500')
-                        try:
-                            data = await run.io_bound(_do_extract, content, name)
-                        except Exception as ex:
-                            logger.warning(f"Ollama receipt extraction failed: {ex}")
-                            ui.notify('Could not read the receipt — please enter the details manually.',
-                                      color='amber-500')
-                            return
-                        if data['date']:
-                            date_input.value = data['date'].strftime('%Y-%m-%d')
-                        desc_input.value = data['description']
-                        amount_input.value = data['amount'] or data['total']
-                        tps_check.value = data['tps'] > 0
-                        tvq_check.value = data['tvq'] > 0
-                        notes_input.value = data['notes']
-                        update_total()
-                        msg = 'Receipt read — please review every field before saving.'
-                        if data['warnings']:
-                            msg += ' ⚠ ' + ' '.join(data['warnings'])
-                        ui.notify(msg, color='emerald-500', multi_line=True, timeout=8000)
-
-                    ui.upload(on_upload=on_autofill_upload, label='✨ Auto-fill from receipt (AI)',
-                              auto_upload=True).props('flat color=violet-600').classes('max-w-xs')
+                    ui.label('📄 Upload a receipt (image or PDF) — AI reads it and fills the form below. '
+                             'Review every field, then click Add Expense.').classes('text-xs text-violet-600 font-medium')
+                _upload_label = 'Upload receipt — AI auto-fill' if ai_ready else 'Attach receipt (optional)'
+                _upload_color = 'color=violet-600' if ai_ready else 'color=indigo-600'
+                ui.upload(on_upload=on_receipt_upload, label=_upload_label, auto_upload=True
+                          ).props('flat ' + _upload_color).classes('w-full max-w-md')
 
                 def save_expense():
                     if not desc_input.value.strip():

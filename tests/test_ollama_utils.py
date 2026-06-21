@@ -265,3 +265,17 @@ def test_normalize_to_image_passes_images_through_unchanged():
     from ollama_utils import normalize_to_image
     fake_png = b"\x89PNG\r\n\x1a\n" + b"not really an image"
     assert normalize_to_image(fake_png, "photo.png") == fake_png
+
+
+# --- read_upload_file: locks the NiceGUI 3.x FileUpload API contract --------
+
+def test_read_upload_file_returns_name_and_bytes():
+    import asyncio
+    from nicegui.elements.upload_files import SmallFileUpload
+    from ollama_utils import read_upload_file
+
+    # The exact object NiceGUI hands to on_upload as e.file (3.x API).
+    f = SmallFileUpload("receipt.png", "image/png", b"PNGDATA")
+    name, data = asyncio.run(read_upload_file(f))
+    assert name == "receipt.png"
+    assert data == b"PNGDATA"

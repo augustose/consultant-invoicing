@@ -68,3 +68,8 @@ docs/private/
 .codespring/
 skills-lock.json
 package-lock.json
+
+# Stray receipt/test images at repo root (user data)
+/*.png
+/*.pdf
+/*.jpg

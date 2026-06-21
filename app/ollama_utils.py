@@ -348,3 +348,11 @@ def normalize_to_image(file_bytes: bytes, filename: str) -> bytes:
     if (filename or "").lower().endswith(".pdf"):
         return pdf_first_page_to_png(file_bytes)
     return file_bytes
+
+
+async def read_upload_file(file) -> tuple:
+    """Extract (filename, bytes) from a NiceGUI 3.x FileUpload (the `e.file` of
+    an upload event). Centralized + tested so the NiceGUI API contract — where
+    `read()` is a coroutine and the name lives on `file.name` — can't silently
+    regress (it did: the 2.x `e.name`/`e.content` API was removed)."""
+    return file.name, await file.read()
