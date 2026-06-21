@@ -84,17 +84,72 @@ function view_logs() {
     tail -n 50 -f "$SYSTEM_LOG" "$STDERR_LOG" "$STDOUT_LOG"
 }
 
+function wait_for_port_free() {
+    local port=$1
+    local timeout_seconds=${2:-8}
+    local attempts=$((timeout_seconds * 10))
+
+    for _ in {1..$attempts}; do
+        if ! lsof -nP -tiTCP:$port -sTCP:LISTEN >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.1
+    done
+
+    return 1
+}
+
 function stop_existing() {
-    # Kill any existing process on port 8081
-    EXISTING_PID=$(lsof -ti :8081 2>/dev/null)
-    if [[ -n "$EXISTING_PID" ]]; then
-        echo -e "${YELLOW}⚠️  Proceso existente en puerto 8081 detectado (PID: $EXISTING_PID). Deteniendo...${NC}"
-        log_message "WARN" "Deteniendo proceso existente en puerto 8081 (PID: $EXISTING_PID)"
-        kill -9 $EXISTING_PID 2>/dev/null
-        sleep 1
-        echo -e "${GREEN}✅ Proceso anterior detenido.${NC}"
-        log_message "INFO" "Proceso anterior detenido exitosamente"
+    local -a existing_pids
+    local pid_output
+    pid_output=$(lsof -nP -tiTCP:8081 -sTCP:LISTEN 2>/dev/null | sort -u)
+    if [[ -z "$pid_output" ]]; then
+        return 0
     fi
+    existing_pids=("${(@f)pid_output}")
+    if (( ${#existing_pids} > 0 )); then
+        local pid_list="${(j: :)existing_pids}"
+        echo -e "${YELLOW}⚠️  Proceso existente en puerto 8081 detectado (PID: $pid_list). Deteniendo...${NC}"
+        log_message "WARN" "Deteniendo proceso existente en puerto 8081 (PID: $pid_list)"
+
+        kill "${existing_pids[@]}" 2>/dev/null
+        if ! wait_for_port_free 8081 5; then
+            pid_output=$(lsof -nP -tiTCP:8081 -sTCP:LISTEN 2>/dev/null | sort -u)
+            existing_pids=("${(@f)pid_output}")
+            if (( ${#existing_pids} > 0 )); then
+                pid_list="${(j: :)existing_pids}"
+                echo -e "${YELLOW}⚠️  El puerto sigue ocupado (PID: $pid_list). Forzando cierre...${NC}"
+                log_message "WARN" "Forzando cierre de procesos en puerto 8081 (PID: $pid_list)"
+                kill -9 "${existing_pids[@]}" 2>/dev/null
+            fi
+        fi
+
+        if wait_for_port_free 8081 5; then
+            echo -e "${GREEN}✅ Proceso anterior detenido.${NC}"
+            log_message "INFO" "Proceso anterior detenido exitosamente"
+        else
+            echo -e "${RED}❌ No se pudo liberar el puerto 8081.${NC}"
+            log_message "ERROR" "No se pudo liberar el puerto 8081"
+            return 1
+        fi
+    fi
+}
+
+function run_preflight_tests() {
+    echo -e "${CYAN}🧪 Running test suite before start...${NC}"
+    log_message "INFO" "Ejecutando tests antes de iniciar la aplicación"
+
+    cd "$PROJECT_ROOT"
+    uv run pytest -q
+    local test_exit=$?
+    if [ $test_exit -ne 0 ]; then
+        echo -e "${RED}${BOLD}❌ Tests failed. App start cancelled.${NC}"
+        log_message "ERROR" "Tests fallaron antes de iniciar la aplicación (código: $test_exit)"
+        return $test_exit
+    fi
+
+    echo -e "${GREEN}✅ Tests passed.${NC}"
+    log_message "INFO" "Tests completados correctamente"
 }
 
 function stop_app() {
@@ -110,9 +165,26 @@ function start_system() {
     log_message "INFO" "Iniciando sistema (Browser: $SHOW_BROWSER)"
     echo -e "\n\n${GREEN}🚀 Starting Python application with UV...${NC}"
     echo -e "${YELLOW}📝 Logs are being recorded in: $LOG_DIR${NC}"
-    
+
+    run_preflight_tests || {
+        echo -e "\nPresione cualquier tecla para volver al menú..."
+        read -k 1
+        return 1
+    }
+
     # Kill any existing process on that port first
-    stop_existing
+    stop_existing || {
+        echo -e "\nPresione cualquier tecla para volver al menú..."
+        read -k 1
+        return 1
+    }
+    wait_for_port_free 8081 || {
+        echo -e "${RED}❌ Port 8081 is still busy. App start cancelled.${NC}"
+        log_message "ERROR" "Puerto 8081 ocupado antes de iniciar"
+        echo -e "\nPresione cualquier tecla para volver al menú..."
+        read -k 1
+        return 1
+    }
     
     cd "$PROJECT_ROOT"
     if [[ "$SHOW_BROWSER" == "true" ]]; then
