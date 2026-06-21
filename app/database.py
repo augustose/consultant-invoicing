@@ -208,6 +208,25 @@ def get_or_create_reimbursable_service(session: Session) -> Service:
     session.refresh(svc)
     return svc
 
+UNASSIGNED_CUSTOMER_NAME = "Unassigned"
+
+def get_or_create_unassigned_customer(session: Session) -> Customer:
+    """Placeholder customer for bulk-imported receipts not yet classified.
+
+    `ClientExpense.customer_id` is required, so bulk imports point here until the
+    user reassigns them in the list.
+    """
+    existing = session.exec(
+        select(Customer).where(Customer.name == UNASSIGNED_CUSTOMER_NAME)
+    ).first()
+    if existing:
+        return existing
+    cust = Customer(name=UNASSIGNED_CUSTOMER_NAME, email="unassigned@local")
+    session.add(cust)
+    session.commit()
+    session.refresh(cust)
+    return cust
+
 # --- Database Engine ---
 
 sqlite_file_name = "data/accounting.db"

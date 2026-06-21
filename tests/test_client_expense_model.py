@@ -109,6 +109,119 @@ def test_get_or_create_reimbursable_service_is_idempotent(session):
     assert len(all_named) == 1
 
 
+def test_receipt_preview_url_for_image(tmp_path):
+    from main import receipt_preview_url
+    p = tmp_path / "5_receipt.png"
+    p.write_bytes(b"\x89PNG\r\n\x1a\n")
+    assert receipt_preview_url(str(p)) == "/receipts/5_receipt.png"
+
+
+def test_receipt_preview_url_for_pdf_generates_thumb(tmp_path):
+    from io import BytesIO
+    from reportlab.pdfgen import canvas
+    from main import receipt_preview_url
+
+    pdf = tmp_path / "7_invoice.pdf"
+    buf = BytesIO()
+    c = canvas.Canvas(buf)
+    c.drawString(100, 700, "X")
+    c.showPage()
+    c.save()
+    pdf.write_bytes(buf.getvalue())
+
+    url = receipt_preview_url(str(pdf))
+    assert url == "/receipts/7_invoice.pdf.thumb.png"
+    assert (tmp_path / "7_invoice.pdf.thumb.png").exists()
+
+
+def test_receipt_preview_url_none_when_missing():
+    from main import receipt_preview_url
+    assert receipt_preview_url(None) is None
+    assert receipt_preview_url("/no/such/file.png") is None
+
+
+def test_flag_duplicates_same_date_and_total():
+    from types import SimpleNamespace
+    from datetime import datetime
+    from main import flag_duplicate_expense_ids
+
+    d = datetime(2026, 3, 1)
+    exps = [
+        SimpleNamespace(id=1, date=d, total=10.0),
+        SimpleNamespace(id=2, date=datetime(2026, 3, 1, 14, 30), total=10.0),  # same day
+        SimpleNamespace(id=3, date=datetime(2026, 3, 2), total=10.0),          # diff day
+        SimpleNamespace(id=4, date=d, total=20.0),                             # diff total
+    ]
+    assert flag_duplicate_expense_ids(exps) == {1, 2}
+
+
+def test_flag_duplicates_ignores_zero_total():
+    from types import SimpleNamespace
+    from datetime import datetime
+    from main import flag_duplicate_expense_ids
+
+    d = datetime(2026, 3, 1)
+    exps = [
+        SimpleNamespace(id=1, date=d, total=0.0),
+        SimpleNamespace(id=2, date=d, total=0.0),
+    ]
+    assert flag_duplicate_expense_ids(exps) == set()
+
+
+def test_flag_duplicates_none_when_all_distinct():
+    from types import SimpleNamespace
+    from datetime import datetime
+    from main import flag_duplicate_expense_ids
+
+    exps = [
+        SimpleNamespace(id=1, date=datetime(2026, 3, 1), total=10.0),
+        SimpleNamespace(id=2, date=datetime(2026, 3, 2), total=20.0),
+    ]
+    assert flag_duplicate_expense_ids(exps) == set()
+
+
+def test_reassign_client_expense_customer_updates_customer(session):
+    from main import reassign_client_expense_customer
+
+    s, cust_id = session
+    other = Customer(name="Other Co", email="other@example.com")
+    s.add(other)
+    s.commit()
+    s.refresh(other)
+    exp = ClientExpense(customer_id=cust_id, description="x", amount=10.0, total=10.0)
+    s.add(exp)
+    s.commit()
+    s.refresh(exp)
+
+    updated = reassign_client_expense_customer(s, exp.id, other.id)
+    assert updated.customer_id == other.id
+
+    s.refresh(exp)
+    assert exp.customer_id == other.id
+
+
+def test_reassign_client_expense_customer_rejects_missing(session):
+    import pytest
+    from main import reassign_client_expense_customer
+
+    s, _ = session
+    with pytest.raises(ValueError):
+        reassign_client_expense_customer(s, 9999, 1)
+
+
+def test_get_or_create_unassigned_customer_is_idempotent(session):
+    from database import get_or_create_unassigned_customer
+
+    s, _ = session
+    c1 = get_or_create_unassigned_customer(s)
+    c2 = get_or_create_unassigned_customer(s)
+
+    assert c1.id == c2.id
+    assert c1.name == "Unassigned"
+    all_named = s.exec(select(Customer).where(Customer.name == "Unassigned")).all()
+    assert len(all_named) == 1
+
+
 def test_transition_updates_status_logs_event_and_sets_dates(session):
     from datetime import datetime
     from main import transition_client_expense

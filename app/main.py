@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from nicegui import app, ui, run
 from sqlmodel import Session, select
 from starlette.responses import HTMLResponse, Response
-from database import engine, Account, TaxRate, AccountType, Customer, Service, Invoice, InvoiceItem, RecurringProfile, CompanySettings, Expense, ClientExpense, ClientExpenseEvent, get_or_create_reimbursable_service, tax_breakdown, TPS_RATE, TVQ_RATE, COMBINED_TAX_RATE, utc_now
+from database import engine, Account, TaxRate, AccountType, Customer, Service, Invoice, InvoiceItem, RecurringProfile, CompanySettings, Expense, ClientExpense, ClientExpenseEvent, get_or_create_reimbursable_service, get_or_create_unassigned_customer, tax_breakdown, TPS_RATE, TVQ_RATE, COMBINED_TAX_RATE, utc_now
 from pdf_utils import build_invoice_pdf
 from template_utils import TemplateManager
 from export_utils import create_accountant_audit_xml, create_accountant_csv_zip, validate_export_range
@@ -15,6 +15,10 @@ from ollama_utils import (
     ollama_is_ready, list_models, probe_model_is_vision,
     normalize_to_image, extract_receipt, read_upload_file,
 )
+
+# Serve stored receipts read-only for inline previews (localhost single-user app).
+os.makedirs('data/receipts', exist_ok=True)
+app.add_media_files('/receipts', 'data/receipts')
 import plotly.graph_objects as go
 from collections import defaultdict
 
@@ -86,6 +90,50 @@ def client_expense_needs_followup(status, last_change, today, threshold=FOLLOWUP
     if status != "waiting":
         return False
     return (today - last_change).days > threshold
+
+
+def receipt_preview_url(receipt_path):
+    """Return a `/receipts/...` URL to preview a receipt, or None.
+
+    Image receipts are served directly; PDF receipts are rendered to a cached
+    first-page `*.thumb.png` so they can preview as an image too.
+    """
+    if not receipt_path or not os.path.exists(receipt_path):
+        return None
+    path_for_url = receipt_path
+    if receipt_path.lower().endswith('.pdf'):
+        thumb = receipt_path + '.thumb.png'
+        if not os.path.exists(thumb):
+            try:
+                from ollama_utils import pdf_first_page_to_png
+                with open(receipt_path, 'rb') as f:
+                    png = pdf_first_page_to_png(f.read())
+                with open(thumb, 'wb') as f:
+                    f.write(png)
+            except Exception:
+                return None
+        path_for_url = thumb
+    return '/receipts/' + os.path.basename(path_for_url)
+
+
+def flag_duplicate_expense_ids(expenses):
+    """Return the ids of expenses sharing the same (calendar date, total).
+
+    Display-only duplicate detection. Zero-total rows are ignored so a batch of
+    weak/empty extractions isn't all flagged against each other.
+    """
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for exp in expenses:
+        if not exp.total:
+            continue
+        day = exp.date.date() if hasattr(exp.date, "date") else exp.date
+        groups[(day, round(exp.total, 2))].append(exp.id)
+    flagged = set()
+    for ids in groups.values():
+        if len(ids) > 1:
+            flagged.update(ids)
+    return flagged
 
 
 def sanitize_receipt_filename(name):
@@ -1084,6 +1132,55 @@ def client_expenses_page():
                 ui.upload(on_upload=on_receipt_upload, label=_upload_label, auto_upload=True
                           ).props('flat ' + _upload_color).classes('w-full max-w-md')
 
+            # ── Bulk import: drop many receipts → auto-create pending rows ──
+            if ai_ready:
+                async def on_bulk_upload(e):
+                    files = e.files
+                    logger.info(f"[bulk] received {len(files)} file(s)")
+                    progress = ui.notification(f'Reading {len(files)} receipt(s) with AI…',
+                                               spinner=True, timeout=None)
+                    with Session(engine) as s:
+                        unassigned_id = get_or_create_unassigned_customer(s).id
+                    created = failed = 0
+                    for f in files:
+                        try:
+                            name, content = await read_upload_file(f)
+                            data = await run.io_bound(_do_extract, content, name)
+                            with Session(engine) as s:
+                                exp = ClientExpense(
+                                    customer_id=unassigned_id,
+                                    description=data['description'],
+                                    date=data['date'] or utc_now(),
+                                    amount=data['amount'], tps=data['tps'], tvq=data['tvq'],
+                                    total=data['total'] or data['amount'],
+                                    status='pending', notes=data['notes'] or None,
+                                )
+                                s.add(exp); s.commit(); s.refresh(exp)
+                                s.add(ClientExpenseEvent(client_expense_id=exp.id, status='pending'))
+                                fname = f"{exp.id}_{sanitize_receipt_filename(name)}"
+                                path = os.path.join('data/receipts', fname)
+                                with open(path, 'wb') as fh:
+                                    fh.write(content)
+                                exp.receipt_path = path
+                                s.add(exp); s.commit()
+                            created += 1
+                        except Exception as ex:
+                            logger.warning(f"[bulk] failed for {getattr(f, 'name', '?')}: {ex!r}")
+                            failed += 1
+                    progress.dismiss()
+                    msg = f'Imported {created} expense(s) into "Unassigned" — review and assign customers below.'
+                    if failed:
+                        msg += f' {failed} could not be read and were skipped.'
+                    ui.notify(msg, color='emerald-500' if created else 'amber-500',
+                              multi_line=True, timeout=8000)
+                    refresh_table()
+
+                with ui.column().classes('w-full gap-1 mt-3'):
+                    ui.label('📥 Or drop several receipts at once — each is read and added to the list '
+                             'as a pending expense under "Unassigned".').classes('text-xs text-violet-600 font-medium')
+                    ui.upload(on_multi_upload=on_bulk_upload, label='Import multiple receipts',
+                              multiple=True, auto_upload=True).props('flat color=violet-600').classes('w-full max-w-md')
+
                 def save_expense():
                     if not desc_input.value.strip():
                         ui.notify('Description is required', color='red-500'); return
@@ -1213,9 +1310,24 @@ def client_expenses_page():
                     ui.button('Close', on_click=dialog.close).props('flat').classes('text-slate-400')
             dialog.open()
 
+        def do_reassign(expense_id, customer_id):
+            try:
+                with Session(engine) as s:
+                    reassign_client_expense_customer(s, expense_id, customer_id)
+                ui.notify('Customer updated', color='emerald-500')
+                refresh_table()
+            except ValueError as ex:
+                ui.notify(str(ex), color='red-500')
+
+        def open_preview(url):
+            with ui.dialog() as d, ui.card().classes('p-2 bg-transparent shadow-none'):
+                ui.image(url).classes('max-w-[85vw] max-h-[85vh] rounded-lg')
+            d.open()
+
         def refresh_table():
             table_container.clear()
             with Session(engine) as s:
+                customers_now = s.exec(select(Customer)).all()
                 query = select(ClientExpense)
                 if filter_state['customer'] != 'All':
                     query = query.where(ClientExpense.customer_id == filter_state['customer'])
@@ -1223,6 +1335,8 @@ def client_expenses_page():
                     query = query.where(ClientExpense.status == filter_state['status'])
                 expenses = s.exec(query.order_by(ClientExpense.date.desc())).all()
                 last_changes = {e.id: _client_expense_last_change(s, e) for e in expenses}
+            cust_opts = {c.id: c.name for c in customers_now}
+            dup_ids = flag_duplicate_expense_ids(expenses)
             with table_container:
                 if not expenses:
                     with ui.card().classes('w-full p-10 premium-card items-center justify-center'):
@@ -1231,10 +1345,12 @@ def client_expenses_page():
                     return
                 cols = [
                     {'name': 'date', 'label': 'Date', 'field': 'date_fmt', 'align': 'left'},
-                    {'name': 'customer', 'label': 'Customer', 'field': 'cname', 'align': 'left'},
+                    {'name': 'receipt', 'label': '', 'field': 'preview', 'align': 'center'},
+                    {'name': 'customer', 'label': 'Customer', 'field': 'customer_id', 'align': 'left'},
                     {'name': 'desc', 'label': 'Description', 'field': 'description', 'align': 'left'},
                     {'name': 'total', 'label': 'Total', 'field': 'total_fmt', 'align': 'right'},
                     {'name': 'status', 'label': 'Status', 'field': 'status', 'align': 'center'},
+                    {'name': 'flags', 'label': '', 'field': 'is_dup', 'align': 'center'},
                     {'name': 'aging', 'label': 'Last change', 'field': 'aging', 'align': 'center'},
                     {'name': 'actions', 'label': '', 'field': 'actions', 'align': 'right'},
                 ]
@@ -1245,21 +1361,30 @@ def client_expenses_page():
                     rows.append({
                         'id': exp.id,
                         'date_fmt': exp.date.strftime('%Y-%m-%d'),
-                        'cname': customer_options.get(exp.customer_id, '?'),
+                        'customer_id': exp.customer_id,
+                        'cname': cust_opts.get(exp.customer_id, '?'),
                         'description': exp.description,
                         'total_fmt': f'${exp.total:,.2f}',
                         'status': exp.status,
                         'aging': f'{days}d',
+                        'preview': receipt_preview_url(exp.receipt_path),
                         'has_receipt': bool(exp.receipt_path),
+                        'is_dup': exp.id in dup_ids,
                         'followup': client_expense_needs_followup(exp.status, last, today),
                     })
+                cust_opts_js = json.dumps([{'label': n, 'value': cid} for cid, n in cust_opts.items()])
                 with ui.card().classes('w-full p-0 premium-card overflow-hidden'):
                     tbl = ui.table(columns=cols, rows=rows, row_key='id').classes('w-full border-none shadow-none')
                     tbl.add_slot('body-cell-status', '''<q-td :props="props"><q-badge :color="{'pending':'amber-500','claimed':'indigo-500','waiting':'orange-500','disputed':'red-500','reimbursed':'emerald-500','written_off':'slate-500'}[props.row.status] || 'slate-500'" :style="{padding:'6px 14px',borderRadius:'100px',fontWeight:'700',fontSize:'10px'}">{{ props.row.status }}</q-badge></q-td>''')
                     tbl.add_slot('body-cell-aging', '''<q-td :props="props"><span :class="props.row.followup ? 'text-red-500 font-bold' : 'text-slate-500'">{{ props.row.aging }}<q-icon v-if="props.row.followup" name="warning" class="q-ml-xs" /></span></q-td>''')
-                    tbl.add_slot('body-cell-actions', '''<q-td :props="props"><q-btn flat round icon="open_in_full" title="Details" @click="$parent.$emit('detail', props.row.id)" /><q-btn v-if="props.row.has_receipt" flat round color="indigo-600" icon="receipt" title="Receipt" @click="$parent.$emit('receipt', props.row.id)" /></q-td>''')
+                    tbl.add_slot('body-cell-customer', f'''<q-td :props="props"><q-select dense options-dense borderless emit-value map-options :model-value="props.row.customer_id" :options='{cust_opts_js}' @update:model-value="val => $parent.$emit('reassign', {{id: props.row.id, customer_id: val}})" style="min-width:150px" /></q-td>''')
+                    tbl.add_slot('body-cell-receipt', '''<q-td :props="props"><q-img v-if="props.row.preview" :src="props.row.preview" style="width:36px;height:36px;border-radius:6px;cursor:pointer" @click="$parent.$emit('preview', props.row.preview)"><q-tooltip>Click to enlarge</q-tooltip></q-img></q-td>''')
+                    tbl.add_slot('body-cell-flags', '''<q-td :props="props"><q-badge v-if="props.row.is_dup" color="amber-600" :style="{padding:'5px 10px',borderRadius:'100px',fontWeight:'700',fontSize:'9px'}">DUP<q-tooltip>Same date &amp; total as another expense — possible duplicate</q-tooltip></q-badge></q-td>''')
+                    tbl.add_slot('body-cell-actions', '''<q-td :props="props"><q-btn flat round icon="open_in_full" title="Details" @click="$parent.$emit('detail', props.row.id)" /><q-btn v-if="props.row.has_receipt" flat round color="indigo-600" icon="download" title="Download receipt" @click="$parent.$emit('receipt', props.row.id)" /></q-td>''')
                     tbl.on('detail', lambda e: open_detail(e.args))
                     tbl.on('receipt', lambda e: open_receipt(e.args))
+                    tbl.on('reassign', lambda e: do_reassign(e.args['id'], e.args['customer_id']))
+                    tbl.on('preview', lambda e: open_preview(e.args))
 
         refresh_table()
 
@@ -2513,6 +2638,22 @@ def transition_client_expense(session, expense_id, target, notes=None, now=None)
         expense.reimbursed_date = now
     session.add(expense)
     session.add(ClientExpenseEvent(client_expense_id=expense.id, status=target, changed_at=now, notes=notes))
+    session.commit()
+    session.refresh(expense)
+    return expense
+
+
+def reassign_client_expense_customer(session, expense_id, customer_id):
+    """Change the customer of a client expense (used for inline list edits).
+
+    Raises ValueError if the expense does not exist.
+    """
+    expense = session.get(ClientExpense, expense_id)
+    if expense is None:
+        raise ValueError("Expense not found")
+    expense.customer_id = customer_id
+    expense.updated_at = utc_now()
+    session.add(expense)
     session.commit()
     session.refresh(expense)
     return expense
