@@ -85,6 +85,30 @@ def parse_receipt_date(value: Optional[str]) -> Optional[datetime]:
     return None
 
 
+# Currency aliases, checked in order. A bare "$" or anything unknown falls back
+# to CAD (this is a Québec app). Vision models emit forms like "CAD$", "CA$", "$".
+_CURRENCY_ALIASES = (
+    ("EUR", ("EUR", "€")),
+    ("GBP", ("GBP", "£")),
+    ("USD", ("USD", "US$", "$US", "US DOLLAR")),
+    ("CAD", ("CAD", "CA$", "C$", "CDN", "CANADIAN")),
+)
+
+
+def normalize_currency(raw) -> str:
+    """Map a model-supplied currency string to an ISO code, defaulting to CAD."""
+    if not raw:
+        return "CAD"
+    s = str(raw).strip().upper()
+    for code, aliases in _CURRENCY_ALIASES:
+        if any(a in s for a in aliases):
+            return code
+    letters = "".join(c for c in s if c.isalpha())
+    if len(letters) == 3:
+        return letters  # already an ISO-style code (e.g. "JPY")
+    return "CAD"
+
+
 # Québec sales-tax rates (kept local so this module stays DB-import-free).
 QC_TPS_RATE = 0.05
 QC_TVQ_RATE = 0.09975
@@ -155,7 +179,7 @@ def map_extraction_to_expense(parsed: dict, *, rate_provider=frankfurter_rate_pr
     if not amount and total:
         amount = total - tax_total
 
-    currency = str(parsed.get("currency") or "CAD").strip().upper() or "CAD"
+    currency = normalize_currency(parsed.get("currency"))
     if currency != "CAD":
         rate = rate_provider(currency, date)
         if rate is not None:
@@ -328,6 +352,7 @@ def extract_receipt(
         "images": [image_b64],
         "stream": False,
         "format": RECEIPT_SCHEMA,
+        "options": {"temperature": 0},  # greedy/deterministic — fewer hallucinated numbers
     }
     parsed = parse_extraction_response(http_post_json(url, payload))
     return map_extraction_to_expense(parsed)

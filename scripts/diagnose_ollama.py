@@ -62,6 +62,7 @@ def main():
     payload = {
         "model": model, "prompt": RECEIPT_PROMPT, "images": [b64],
         "stream": False, "format": RECEIPT_SCHEMA,
+        "options": {"temperature": 0},
     }
     t0 = time.time()
     try:

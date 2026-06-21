@@ -27,6 +27,22 @@ def test_parse_receipt_date_unparseable_returns_none():
     assert parse_receipt_date("") is None
 
 
+# --- normalize_currency -------------------------------------------------
+
+def test_normalize_currency_variants():
+    from ollama_utils import normalize_currency
+    assert normalize_currency("CAD$") == "CAD"
+    assert normalize_currency("CA$") == "CAD"
+    assert normalize_currency("$") == "CAD"        # Québec app default
+    assert normalize_currency(None) == "CAD"
+    assert normalize_currency("") == "CAD"
+    assert normalize_currency("USD") == "USD"
+    assert normalize_currency("US$") == "USD"
+    assert normalize_currency("€") == "EUR"
+    assert normalize_currency("EUR") == "EUR"
+    assert normalize_currency("£") == "GBP"
+
+
 # --- split_qc_tax -------------------------------------------------------
 
 def test_split_qc_tax_splits_combined_rate():
