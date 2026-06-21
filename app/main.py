@@ -1274,12 +1274,45 @@ def client_expenses_page():
                 cust_name = customer_options.get(exp.customer_id, '?')
                 cur_status, exp_total, exp_desc = exp.status, exp.total, exp.description
                 attached_invoice = exp.invoice_id
+
+                def _fmt_dt(v, with_time=True):
+                    if v is None:
+                        return '—'
+                    return v.strftime('%Y-%m-%d %H:%M' if with_time else '%Y-%m-%d')
+
+                detail_rows = [
+                    ('ID', str(exp.id)),
+                    ('Customer', cust_name),
+                    ('Description', exp.description or '—'),
+                    ('Date', _fmt_dt(exp.date, with_time=False)),
+                    ('Subtotal (pre-tax)', f'${exp.amount:,.2f}'),
+                    ('TPS', f'${exp.tps:,.2f}'),
+                    ('TVQ', f'${exp.tvq:,.2f}'),
+                    ('Total (tax-incl.)', f'${exp.total:,.2f}'),
+                    ('Status', exp.status),
+                    ('Receipt', exp.receipt_path or '—'),
+                    ('Claim date', _fmt_dt(exp.claim_date)),
+                    ('Reimbursed date', _fmt_dt(exp.reimbursed_date)),
+                    ('Invoice', f'#{exp.invoice_id}' if exp.invoice_id else '—'),
+                    ('Recurring', 'Yes' if exp.is_recurring else 'No'),
+                    ('Recurrence day', str(exp.recurrence_day) if exp.recurrence_day is not None else '—'),
+                    ('Next due date', _fmt_dt(exp.next_due_date, with_time=False)),
+                    ('Notes', exp.notes or '—'),
+                    ('Created at', _fmt_dt(exp.created_at)),
+                    ('Updated at', _fmt_dt(exp.updated_at)),
+                ]
             with ui.dialog() as dialog, ui.card().classes('p-8 w-[620px] max-w-[calc(100vw-2rem)] premium-card'):
                 ui.label(exp_desc).classes('text-2xl font-extrabold text-slate-900 dark:text-slate-100')
                 ui.label(f'{cust_name} · ${exp_total:,.2f}').classes('text-slate-500 mb-4')
                 with ui.row().classes('items-center gap-2 mb-6'):
                     ui.label('Status:').classes('text-sm font-semibold text-slate-500')
                     ui.badge(cur_status).props(f'color={CLIENT_EXPENSE_STATUS_COLORS.get(cur_status, "slate-500")}')
+
+                ui.label('Details').classes('text-xs font-black text-slate-400 uppercase tracking-widest')
+                with ui.grid(columns='auto 1fr').classes('gap-x-6 gap-y-2 mt-2 mb-6 w-full'):
+                    for field_label, field_value in detail_rows:
+                        ui.label(field_label).classes('text-sm font-semibold text-slate-500 whitespace-nowrap')
+                        ui.label(field_value).classes('text-sm text-slate-800 dark:text-slate-200 break-all')
 
                 next_states = client_expense_next_states(cur_status)
                 if next_states:
@@ -1320,8 +1353,11 @@ def client_expenses_page():
                 ui.notify(str(ex), color='red-500')
 
         def open_preview(url):
-            with ui.dialog() as d, ui.card().classes('p-2 bg-transparent shadow-none'):
-                ui.image(url).classes('max-w-[85vw] max-h-[85vh] rounded-lg')
+            # A real <img> element — ui.image (q-img) collapses to 0×0 and
+            # ui.html doesn't inject here; ui.element('img') renders reliably.
+            with ui.dialog() as d, ui.card().classes('p-2'):
+                ui.element('img').props(f'src="{url}"').style(
+                    'max-width:85vw;max-height:85vh;display:block;border-radius:8px')
             d.open()
 
         def refresh_table():
@@ -1414,7 +1450,7 @@ def client_expenses_page():
                     tbl.add_slot('body-cell-status', '''<q-td :props="props"><q-badge :color="{'pending':'amber-500','claimed':'indigo-500','waiting':'orange-500','disputed':'red-500','reimbursed':'emerald-500','written_off':'slate-500'}[props.row.status] || 'slate-500'" :style="{padding:'6px 14px',borderRadius:'100px',fontWeight:'700',fontSize:'10px'}">{{ props.row.status }}</q-badge></q-td>''')
                     tbl.add_slot('body-cell-aging', '''<q-td :props="props"><span :class="props.row.followup ? 'text-red-500 font-bold' : 'text-slate-500'">{{ props.row.aging }}<q-icon v-if="props.row.followup" name="warning" class="q-ml-xs" /></span></q-td>''')
                     tbl.add_slot('body-cell-customer', f'''<q-td :props="props"><q-select dense options-dense borderless emit-value map-options :model-value="props.row.customer_id" :options='{cust_opts_js}' @update:model-value="val => $parent.$emit('reassign', {{id: props.row.id, customer_id: val}})" style="min-width:150px" /></q-td>''')
-                    tbl.add_slot('body-cell-receipt', '''<q-td :props="props"><img v-if="props.row.preview" :src="props.row.preview" style="width:40px;height:40px;object-fit:cover;border-radius:6px;cursor:pointer;border:1px solid #e2e8f0" @click="$parent.$emit('preview', props.row.preview)"><q-tooltip v-if="props.row.preview">Click to enlarge</q-tooltip></q-td>''')
+                    tbl.add_slot('body-cell-receipt', '''<q-td :props="props"><img v-if="props.row.preview" :src="props.row.preview" style="width:40px;height:40px;min-width:40px;max-width:40px;object-fit:cover;border-radius:6px;cursor:pointer;border:1px solid #e2e8f0" @click="$parent.$emit('preview', props.row.preview)"><q-tooltip v-if="props.row.preview">Click to enlarge</q-tooltip></q-td>''')
                     tbl.add_slot('body-cell-flags', '''<q-td :props="props"><q-badge v-if="props.row.is_dup" color="amber-600" :style="{padding:'5px 10px',borderRadius:'100px',fontWeight:'700',fontSize:'9px'}">DUP<q-tooltip>Same date &amp; total as another expense — possible duplicate</q-tooltip></q-badge></q-td>''')
                     tbl.add_slot('body-cell-actions', '''<q-td :props="props"><q-btn flat round icon="open_in_full" title="Details" @click="$parent.$emit('detail', props.row.id)" /><q-btn v-if="props.row.has_receipt" flat round color="indigo-600" icon="download" title="Download receipt" @click="$parent.$emit('receipt', props.row.id)" /></q-td>''')
                     tbl.on('detail', lambda e: open_detail(e.args))
