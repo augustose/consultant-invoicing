@@ -104,6 +104,20 @@ def test_map_quebec_cad_receipt_splits_combined_tax():
     assert out["warnings"] == []
 
 
+def test_map_derives_subtotal_and_tax_from_total_when_model_inconsistent():
+    from ollama_utils import map_extraction_to_expense
+    # Real minicpm-v output: total is right, subtotal/tax are garbage (negative tax).
+    parsed = {
+        "vendor": "Anthropic, PBC", "date": "March 27, 2026",
+        "subtotal": 149, "tax_total": -25.38, "total": 129.36, "currency": "CAD",
+    }
+    out = map_extraction_to_expense(parsed, rate_provider=_rate(1.0))
+    assert out["total"] == pytest.approx(129.36)
+    assert out["amount"] == pytest.approx(129.36 / 1.14975, abs=0.01)   # 112.51
+    assert out["tps"] + out["tvq"] == pytest.approx(129.36 - 129.36 / 1.14975, abs=0.01)
+    assert any("deriv" in w.lower() for w in out["warnings"])
+
+
 def test_map_reconstructs_missing_total_from_subtotal_and_tax():
     from ollama_utils import map_extraction_to_expense
     parsed = {

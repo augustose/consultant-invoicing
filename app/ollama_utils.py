@@ -175,6 +175,19 @@ def map_extraction_to_expense(parsed: dict, *, rate_provider=frankfurter_rate_pr
     # Québec receipts: split the combined tax into TPS/TVQ. Foreign receipts have
     # no QC columns, so leave tps/tvq at 0 and note the foreign tax (in CAD).
     if currency == "CAD":
+        # Vision models read the prominent grand total reliably but often misread
+        # the subtotal/tax. When the model's split is invalid or inconsistent with
+        # the total, anchor on the total and derive the QC-tax-inclusive split.
+        consistent = (
+            total > 0 and amount > 0 and tax_total >= 0
+            and amount <= total + 0.01
+            and abs(amount + tax_total - total) <= max(0.02, 0.01 * total)
+        )
+        if not consistent and total > 0:
+            amount = total / (1 + QC_COMBINED_RATE)
+            tax_total = total - amount
+            warnings.append("Subtotal & tax were derived from the total at "
+                            "14.975% QC tax — verify.")
         tps, tvq = split_qc_tax(tax_total)
     else:
         tps, tvq = 0.0, 0.0
