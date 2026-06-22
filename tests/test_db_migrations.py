@@ -41,3 +41,20 @@ def test_add_missing_columns_is_idempotent():
 
     assert first == ["ollama_url"]
     assert second == []
+
+
+def test_create_db_and_tables_backfills_clientexpense_external_ref(monkeypatch):
+    """A pre-existing clientexpense table (no external_ref) is migrated in place."""
+    import database
+
+    engine = create_engine("sqlite:///:memory:")
+    monkeypatch.setattr(database, "engine", engine)
+    # Simulate an old DB: clientexpense exists without the external_ref column.
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE clientexpense (id INTEGER PRIMARY KEY, description TEXT)"
+        ))
+
+    database.create_db_and_tables()
+
+    assert "external_ref" in _columns(engine, "clientexpense")

@@ -2,7 +2,7 @@ import calendar
 import re
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from nicegui import app, ui, run
+from nicegui import app, ui, run, context
 from sqlmodel import Session, select
 from starlette.responses import HTMLResponse, Response
 from database import engine, Account, TaxRate, AccountType, Customer, Service, Invoice, InvoiceItem, RecurringProfile, CompanySettings, Expense, ClientExpense, ClientExpenseEvent, get_or_create_reimbursable_service, get_or_create_unassigned_customer, tax_breakdown, TPS_RATE, TVQ_RATE, COMBINED_TAX_RATE, utc_now
@@ -43,6 +43,35 @@ CLIENT_EXPENSE_TRANSITIONS = {
 CLIENT_EXPENSE_STATUSES = tuple(CLIENT_EXPENSE_TRANSITIONS.keys())
 FOLLOWUP_THRESHOLD_DAYS = 30
 REIMBURSABLE_SERVICE_NAME = "Reimbursable Expense"
+
+
+def client_is_active(client):
+    """Return False after NiceGUI has deleted the browser client."""
+    return client is not None and not getattr(client, "_deleted", False)
+
+
+def safe_client_notify(client, message, **kwargs):
+    """Send a notification only while the originating NiceGUI client exists."""
+    if not client_is_active(client):
+        logger.info(f"Skipped notification for deleted client: {message}")
+        return False
+
+    options = {"message": str(message), "position": kwargs.pop("position", "bottom")}
+    if "multi_line" in kwargs:
+        options["multiLine"] = kwargs.pop("multi_line")
+    if "close_button" in kwargs:
+        options["closeBtn"] = kwargs.pop("close_button")
+    options.update({key: value for key, value in kwargs.items() if value is not None})
+    client.outbox.enqueue_message("notify", options, client.id)
+    return True
+
+
+def safe_notification_dismiss(notification):
+    """Dismiss a NiceGUI notification if its client still exists."""
+    if notification is None or not client_is_active(getattr(notification, "client", None)):
+        return False
+    notification.dismiss()
+    return True
 
 
 def compute_tax_split(amount, apply_tps, apply_tvq):
@@ -1061,6 +1090,57 @@ CLIENT_EXPENSE_STATUS_COLORS = {
     'disputed': 'red-500', 'reimbursed': 'emerald-500', 'written_off': 'slate-500',
 }
 
+CLIENT_EXPENSE_STATUS_LABELS = {
+    'pending': 'Pending', 'claimed': 'Claimed', 'waiting': 'Waiting',
+    'disputed': 'Disputed', 'reimbursed': 'Reimbursed', 'written_off': 'Written off',
+}
+
+
+def render_client_expense_workflow(framed=True):
+    """Horizontal reference strip of the client-expense reimbursement workflow.
+
+    Rendered wherever expense statuses are shown so the user can see, at a
+    glance, every state an expense can be in and how it moves between them.
+    Terminal states (no valid next state) are marked with a lock icon.
+    """
+    def _badge(status):
+        b = ui.badge(CLIENT_EXPENSE_STATUS_LABELS.get(status, status)).props(
+            f'color={CLIENT_EXPENSE_STATUS_COLORS.get(status, "slate-500")}'
+        ).style('padding:5px 12px;border-radius:100px;font-weight:700;font-size:10px')
+        if not client_expense_next_states(status):  # terminal
+            with b:
+                ui.icon('lock', size='11px').classes('ml-1 opacity-80')
+
+    def _arrow():
+        ui.icon('arrow_forward', size='16px').classes('text-slate-300')
+
+    def _body():
+        ui.label('Expense workflow').classes(
+            'text-xs font-black text-slate-400 uppercase tracking-widest mb-3')
+        # Happy path: pending → claimed → waiting → reimbursed
+        with ui.row().classes('items-center gap-2 flex-wrap'):
+            _badge('pending'); _arrow()
+            _badge('claimed'); _arrow()
+            _badge('waiting'); _arrow()
+            _badge('reimbursed')
+        # Dispute branch: waiting → disputed → reimbursed / written_off
+        with ui.row().classes('items-center gap-2 flex-wrap mt-2'):
+            ui.label('If disputed:').classes('text-xs text-slate-400 mr-1')
+            _badge('waiting'); _arrow()
+            _badge('disputed'); _arrow()
+            _badge('reimbursed')
+            ui.label('or').classes('text-xs text-slate-400')
+            _badge('written_off')
+        ui.label('Locked states are terminal — no further changes.').classes(
+            'text-[11px] text-slate-400 mt-3')
+
+    if framed:
+        with ui.card().classes('w-full p-4 premium-card mt-4'):
+            _body()
+    else:
+        with ui.column().classes('w-full gap-0 mb-6'):
+            _body()
+
 
 def _client_expense_last_change(session, expense):
     """Most recent status-change timestamp, falling back to created_at."""
@@ -1099,8 +1179,7 @@ def client_expenses_page():
             return
 
         # ── Add form ──
-        with ui.card().classes('w-full p-6 premium-card mb-6'):
-            ui.label('Add Client Expense').classes('text-sm font-black text-slate-400 uppercase tracking-widest mb-4')
+        with ui.expansion('Add Client Expense', value=False, icon='add').classes('w-full p-6 premium-card mb-6'):
             with ui.row().classes('w-full gap-4 flex-wrap'):
                 cust_select = ui.select(customer_options, value=next(iter(customer_options)), label='Customer').props('dense outlined').classes('w-56')
                 date_input = ui.input('Date', value=today.strftime('%Y-%m-%d')).props('dense outlined').classes('w-40')
@@ -1123,6 +1202,44 @@ def client_expenses_page():
                 day_input = ui.number('Day of month', value=today.day, min=1, max=31).props('dense outlined').classes('w-36')
                 day_input.bind_visibility_from(recurring_check, 'value')
                 notes_input = ui.input('Notes (optional)').props('dense outlined').classes('flex-1 min-w-48')
+
+            def save_expense():
+                if not desc_input.value.strip():
+                    ui.notify('Description is required', color='red-500'); return
+                try:
+                    exp_date = datetime.strptime(date_input.value, '%Y-%m-%d')
+                except ValueError:
+                    ui.notify('Invalid date format. Use YYYY-MM-DD', color='red-500'); return
+                amt = float(amount_input.value or 0)
+                if amt <= 0:
+                    ui.notify('Amount must be greater than zero', color='red-500'); return
+                tps, tvq, total = compute_tax_split(amt, tps_check.value, tvq_check.value)
+                day = int(day_input.value or exp_date.day) if recurring_check.value else None
+                with Session(engine) as s:
+                    exp = ClientExpense(
+                        customer_id=cust_select.value, description=desc_input.value.strip(),
+                        date=exp_date, amount=amt, tps=tps, tvq=tvq, total=total,
+                        status='pending', is_recurring=recurring_check.value,
+                        recurrence_day=day,
+                        next_due_date=advance_recurrence_date(exp_date, day) if recurring_check.value else None,
+                        notes=notes_input.value.strip() or None,
+                    )
+                    s.add(exp); s.commit(); s.refresh(exp)
+                    s.add(ClientExpenseEvent(client_expense_id=exp.id, status='pending'))
+                    if pending_receipt['content']:
+                        fname = f"{exp.id}_{sanitize_receipt_filename(pending_receipt['name'])}"
+                        path = os.path.join('data/receipts', fname)
+                        with open(path, 'wb') as f:
+                            f.write(pending_receipt['content'])
+                        exp.receipt_path = path
+                        s.add(exp)
+                    s.commit()
+                pending_receipt['name'] = None; pending_receipt['content'] = None
+                ui.notify('Client expense saved!', color='emerald-500')
+                desc_input.value = ''; amount_input.value = 0.0
+                tps_check.value = False; tvq_check.value = False
+                recurring_check.value = False; notes_input.value = ''
+                update_total(); refresh_table()
 
             # ── Receipt upload (single control; auto-fills with AI when configured) ──
             def _do_extract(content, name):
@@ -1180,6 +1297,7 @@ def client_expenses_page():
             # ── Bulk import: drop many receipts → auto-create pending rows ──
             if ai_ready:
                 async def on_bulk_upload(e):
+                    upload_client = context.client
                     files = e.files
                     logger.info(f"[bulk] received {len(files)} file(s)")
                     progress = ui.notification(f'Reading {len(files)} receipt(s) with AI…',
@@ -1212,13 +1330,14 @@ def client_expenses_page():
                         except Exception as ex:
                             logger.warning(f"[bulk] failed for {getattr(f, 'name', '?')}: {ex!r}")
                             failed += 1
-                    progress.dismiss()
+                    safe_notification_dismiss(progress)
                     msg = f'Imported {created} expense(s) into "Unassigned" — review and assign customers below.'
                     if failed:
                         msg += f' {failed} could not be read and were skipped.'
-                    ui.notify(msg, color='emerald-500' if created else 'amber-500',
-                              multi_line=True, timeout=8000)
-                    refresh_table()
+                    safe_client_notify(upload_client, msg, color='emerald-500' if created else 'amber-500',
+                                       multi_line=True, timeout=8000)
+                    if client_is_active(upload_client):
+                        refresh_table()
 
                 with ui.column().classes('w-full gap-1 mt-3'):
                     ui.label('📥 Or drop several receipts at once — each is read and added to the list '
@@ -1226,47 +1345,11 @@ def client_expenses_page():
                     ui.upload(on_multi_upload=on_bulk_upload, label='Import multiple receipts',
                               multiple=True, auto_upload=True).props('flat color=violet-600').classes('w-full max-w-md')
 
-                def save_expense():
-                    if not desc_input.value.strip():
-                        ui.notify('Description is required', color='red-500'); return
-                    try:
-                        exp_date = datetime.strptime(date_input.value, '%Y-%m-%d')
-                    except ValueError:
-                        ui.notify('Invalid date format. Use YYYY-MM-DD', color='red-500'); return
-                    amt = float(amount_input.value or 0)
-                    if amt <= 0:
-                        ui.notify('Amount must be greater than zero', color='red-500'); return
-                    tps, tvq, total = compute_tax_split(amt, tps_check.value, tvq_check.value)
-                    day = int(day_input.value or exp_date.day) if recurring_check.value else None
-                    with Session(engine) as s:
-                        exp = ClientExpense(
-                            customer_id=cust_select.value, description=desc_input.value.strip(),
-                            date=exp_date, amount=amt, tps=tps, tvq=tvq, total=total,
-                            status='pending', is_recurring=recurring_check.value,
-                            recurrence_day=day,
-                            next_due_date=advance_recurrence_date(exp_date, day) if recurring_check.value else None,
-                            notes=notes_input.value.strip() or None,
-                        )
-                        s.add(exp); s.commit(); s.refresh(exp)
-                        s.add(ClientExpenseEvent(client_expense_id=exp.id, status='pending'))
-                        if pending_receipt['content']:
-                            fname = f"{exp.id}_{sanitize_receipt_filename(pending_receipt['name'])}"
-                            path = os.path.join('data/receipts', fname)
-                            with open(path, 'wb') as f:
-                                f.write(pending_receipt['content'])
-                            exp.receipt_path = path
-                            s.add(exp)
-                        s.commit()
-                    pending_receipt['name'] = None; pending_receipt['content'] = None
-                    ui.notify('Client expense saved!', color='emerald-500')
-                    desc_input.value = ''; amount_input.value = 0.0
-                    tps_check.value = False; tvq_check.value = False
-                    recurring_check.value = False; notes_input.value = ''
-                    update_total(); refresh_table()
-                ui.button('Add Expense', icon='add', on_click=save_expense).classes('btn-primary h-10 px-6 ml-auto')
+            ui.button('Add Expense', icon='add', on_click=save_expense).classes('btn-primary h-10 px-6 ml-auto')
 
         # ── Filters ──
         filter_state = {'customer': 'All', 'status': 'All', 'min_total': None, 'max_total': None, 'duplicate_total': None}
+        filter_controls_paused = {'value': False}
         with ui.card().classes('w-full p-4 premium-card mb-4'):
             with ui.row().classes('w-full items-center gap-3 flex-wrap'):
                 ui.label('Filter:').classes('text-sm font-semibold text-slate-500 mr-2')
@@ -1275,7 +1358,19 @@ def client_expenses_page():
                 amount_min_filter = ui.number('Min total', value=None, min=0, step=0.01, format='%.2f').props('dense outlined prefix=$').classes('w-36')
                 amount_max_filter = ui.number('Max total', value=None, min=0, step=0.01, format='%.2f').props('dense outlined prefix=$').classes('w-36')
 
+                def set_filter_control_values(customer='All', status='All', min_total=None, max_total=None):
+                    filter_controls_paused['value'] = True
+                    try:
+                        cust_filter.value = customer
+                        status_filter.value = status
+                        amount_min_filter.value = min_total
+                        amount_max_filter.value = max_total
+                    finally:
+                        filter_controls_paused['value'] = False
+
                 def update_filter(key, value):
+                    if filter_controls_paused['value']:
+                        return
                     filter_state[key] = value
                     if key in {'min_total', 'max_total'}:
                         filter_state['duplicate_total'] = None
@@ -1283,19 +1378,25 @@ def client_expenses_page():
 
                 def clear_filters():
                     filter_state.update(customer='All', status='All', min_total=None, max_total=None, duplicate_total=None)
-                    cust_filter.value = 'All'
-                    status_filter.value = 'All'
-                    amount_min_filter.value = None
-                    amount_max_filter.value = None
+                    set_filter_control_values()
                     refresh_table()
 
-                cust_filter.on_value_change(lambda e: (filter_state.update(customer=e.value), refresh_table()))
-                status_filter.on_value_change(lambda e: (filter_state.update(status=e.value), refresh_table()))
+                def update_filter_direct(key, value):
+                    if filter_controls_paused['value']:
+                        return
+                    filter_state[key] = value
+                    refresh_table()
+
+                cust_filter.on_value_change(lambda e: update_filter_direct('customer', e.value))
+                status_filter.on_value_change(lambda e: update_filter_direct('status', e.value))
                 amount_min_filter.on_value_change(lambda e: update_filter('min_total', e.value))
                 amount_max_filter.on_value_change(lambda e: update_filter('max_total', e.value))
                 ui.button('Clear', icon='backspace', on_click=clear_filters).props('flat dense no-caps').classes('text-slate-500')
 
         table_container = ui.column().classes('w-full')
+
+        # Workflow reference, always visible below the list.
+        render_client_expense_workflow()
 
         def open_receipt(expense_id):
             with Session(engine) as s:
@@ -1369,9 +1470,12 @@ def client_expenses_page():
             with ui.dialog() as dialog, ui.card().classes('p-8 w-[620px] max-w-[calc(100vw-2rem)] premium-card'):
                 ui.label(exp_desc).classes('text-2xl font-extrabold text-slate-900 dark:text-slate-100')
                 ui.label(f'{cust_name} · ${exp_total:,.2f}').classes('text-slate-500 mb-4')
-                with ui.row().classes('items-center gap-2 mb-6'):
+                with ui.row().classes('items-center gap-2 mb-4'):
                     ui.label('Status:').classes('text-sm font-semibold text-slate-500')
                     ui.badge(cur_status).props(f'color={CLIENT_EXPENSE_STATUS_COLORS.get(cur_status, "slate-500")}')
+
+                # Full workflow so the current status reads in context.
+                render_client_expense_workflow(framed=False)
 
                 ui.label('Details').classes('text-xs font-black text-slate-400 uppercase tracking-widest')
                 with ui.grid(columns='auto 1fr').classes('gap-x-6 gap-y-2 mt-2 mb-6 w-full'):
@@ -1417,6 +1521,15 @@ def client_expenses_page():
             except ValueError as ex:
                 ui.notify(str(ex), color='red-500')
 
+        def do_set_ref(expense_id, ref):
+            try:
+                with Session(engine) as s:
+                    set_client_expense_external_ref(s, expense_id, ref)
+                ui.notify('Reference saved', color='emerald-500')
+                refresh_table()
+            except ValueError as ex:
+                ui.notify(str(ex), color='red-500')
+
         def open_preview(url):
             # A real <img> element — ui.image (q-img) collapses to 0×0 and
             # ui.html doesn't inject here; ui.element('img') renders reliably.
@@ -1427,10 +1540,7 @@ def client_expenses_page():
 
         def filter_by_duplicate_total(total):
             filter_state.update(customer='All', status='All', min_total=total, max_total=total, duplicate_total=total)
-            cust_filter.value = 'All'
-            status_filter.value = 'All'
-            amount_min_filter.value = total
-            amount_max_filter.value = total
+            set_filter_control_values(min_total=total, max_total=total)
             ui.notify(f'Filtering possible duplicates at ${total:,.2f}', color='amber-600')
             refresh_table()
 
@@ -1456,6 +1566,7 @@ def client_expenses_page():
                     {'name': 'desc', 'label': 'Description', 'field': 'description', 'align': 'left'},
                     {'name': 'total', 'label': 'Total', 'field': 'total_fmt', 'align': 'right'},
                     {'name': 'status', 'label': 'Status', 'field': 'status', 'align': 'center'},
+                    {'name': 'ref', 'label': 'Ref. #', 'field': 'external_ref', 'align': 'left'},
                     {'name': 'flags', 'label': '', 'field': 'is_dup', 'align': 'center'},
                     {'name': 'aging', 'label': 'Last change', 'field': 'aging', 'align': 'center'},
                     {'name': 'actions', 'label': '', 'field': 'actions', 'align': 'right'},
@@ -1473,6 +1584,7 @@ def client_expenses_page():
                         'total': exp.total,
                         'total_fmt': f'${exp.total:,.2f}',
                         'status': exp.status,
+                        'external_ref': exp.external_ref or '',
                         'aging': f'{days}d',
                         'preview': receipt_preview_url(exp.receipt_path),
                         'has_receipt': bool(exp.receipt_path),
@@ -1522,11 +1634,13 @@ def client_expenses_page():
                     tbl.add_slot('body-cell-aging', '''<q-td :props="props"><span :class="props.row.followup ? 'text-red-500 font-bold' : 'text-slate-500'">{{ props.row.aging }}<q-icon v-if="props.row.followup" name="warning" class="q-ml-xs" /></span></q-td>''')
                     tbl.add_slot('body-cell-customer', f'''<q-td :props="props"><q-select dense options-dense borderless emit-value map-options :model-value="props.row.customer_id" :options='{cust_opts_js}' @update:model-value="val => $parent.$emit('reassign', {{id: props.row.id, customer_id: val}})" style="min-width:150px" /></q-td>''')
                     tbl.add_slot('body-cell-receipt', '''<q-td :props="props"><img v-if="props.row.preview" :src="props.row.preview" style="width:40px;height:40px;min-width:40px;max-width:40px;object-fit:cover;border-radius:6px;cursor:pointer;border:1px solid #e2e8f0" @click="$parent.$emit('preview', props.row.preview)"><q-tooltip v-if="props.row.preview">Click to enlarge</q-tooltip></q-td>''')
+                    tbl.add_slot('body-cell-ref', '''<q-td :props="props"><q-input dense borderless :model-value="props.row.external_ref" placeholder="—" input-class="text-slate-600" @change="val => $parent.$emit('setref', {id: props.row.id, ref: val})" style="min-width:110px" /></q-td>''')
                     tbl.add_slot('body-cell-flags', '''<q-td :props="props"><q-badge v-if="props.row.is_dup" color="amber-600" :style="{padding:'5px 10px',borderRadius:'100px',fontWeight:'700',fontSize:'9px',cursor:'pointer'}" @click.stop="$parent.$emit('duplicate-total', props.row.total)">DUP<q-tooltip>Filter all expenses with this same total</q-tooltip></q-badge></q-td>''')
                     tbl.add_slot('body-cell-actions', '''<q-td :props="props"><q-btn flat round icon="open_in_full" title="Details" @click="$parent.$emit('detail', props.row.id)" /><q-btn v-if="props.row.has_receipt" flat round color="indigo-600" icon="download" title="Download receipt" @click="$parent.$emit('receipt', props.row.id)" /></q-td>''')
                     tbl.on('detail', lambda e: open_detail(e.args))
                     tbl.on('receipt', lambda e: open_receipt(e.args))
                     tbl.on('reassign', lambda e: do_reassign(e.args['id'], e.args['customer_id']))
+                    tbl.on('setref', lambda e: do_set_ref(e.args['id'], e.args['ref']))
                     tbl.on('preview', lambda e: open_preview(e.args))
                     tbl.on('duplicate-total', lambda e: filter_by_duplicate_total(e.args))
 
@@ -2825,6 +2939,25 @@ def reassign_client_expense_customer(session, expense_id, customer_id):
     if expense is None:
         raise ValueError("Expense not found")
     expense.customer_id = customer_id
+    expense.updated_at = utc_now()
+    session.add(expense)
+    session.commit()
+    session.refresh(expense)
+    return expense
+
+
+def set_client_expense_external_ref(session, expense_id, ref):
+    """Set the optional reimbursement reference number on a client expense.
+
+    Used for inline list edits. The value is free text (the same number may be
+    reused across several expenses reimbursed together). Blank input clears it to
+    NULL. Raises ValueError if the expense does not exist.
+    """
+    expense = session.get(ClientExpense, expense_id)
+    if expense is None:
+        raise ValueError("Expense not found")
+    cleaned = (ref or "").strip()
+    expense.external_ref = cleaned or None
     expense.updated_at = utc_now()
     session.add(expense)
     session.commit()

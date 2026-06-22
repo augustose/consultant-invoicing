@@ -166,6 +166,7 @@ class ClientExpense(SQLModel, table=True):
     tvq: float = Field(default=0.0)
     total: float = Field(default=0.0)   # amount + tps + tvq (tax-inclusive)
     status: str = Field(default="pending")
+    external_ref: Optional[str] = None  # reimbursement reference # given by the client (optional, may repeat across expenses)
     receipt_path: Optional[str] = None
     claim_date: Optional[datetime] = None
     reimbursed_date: Optional[datetime] = None
@@ -259,6 +260,9 @@ def create_db_and_tables():
     add_missing_columns(engine, "companysettings", {
         "ollama_url": "TEXT",
         "ollama_model": "TEXT",
+    })
+    add_missing_columns(engine, "clientexpense", {
+        "external_ref": "TEXT",
     })
 
 def seed_initial_data():

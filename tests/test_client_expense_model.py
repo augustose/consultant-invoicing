@@ -296,6 +296,69 @@ def test_reassign_client_expense_customer_rejects_missing(session):
         reassign_client_expense_customer(s, 9999, 1)
 
 
+def test_client_expense_external_ref_defaults_to_none(session):
+    s, cust_id = session
+    exp = ClientExpense(customer_id=cust_id, description="x", amount=10.0, total=10.0)
+    s.add(exp)
+    s.commit()
+    s.refresh(exp)
+    assert exp.external_ref is None
+
+
+def test_set_external_ref_updates_value(session):
+    from main import set_client_expense_external_ref
+
+    s, cust_id = session
+    exp = ClientExpense(customer_id=cust_id, description="x", amount=10.0, total=10.0)
+    s.add(exp)
+    s.commit()
+    s.refresh(exp)
+
+    updated = set_client_expense_external_ref(s, exp.id, "  REF-001  ")
+    assert updated.external_ref == "REF-001"  # trimmed
+    s.refresh(exp)
+    assert exp.external_ref == "REF-001"
+
+
+def test_set_external_ref_allows_same_value_on_multiple_expenses(session):
+    from main import set_client_expense_external_ref
+
+    s, cust_id = session
+    a = ClientExpense(customer_id=cust_id, description="a", amount=10.0, total=10.0)
+    b = ClientExpense(customer_id=cust_id, description="b", amount=20.0, total=20.0)
+    s.add(a); s.add(b); s.commit(); s.refresh(a); s.refresh(b)
+
+    set_client_expense_external_ref(s, a.id, "BATCH-42")
+    set_client_expense_external_ref(s, b.id, "BATCH-42")
+    s.refresh(a); s.refresh(b)
+    assert a.external_ref == "BATCH-42"
+    assert b.external_ref == "BATCH-42"
+
+
+def test_set_external_ref_blank_clears_to_none(session):
+    from main import set_client_expense_external_ref
+
+    s, cust_id = session
+    exp = ClientExpense(customer_id=cust_id, description="x", amount=10.0, total=10.0,
+                        external_ref="OLD")
+    s.add(exp)
+    s.commit()
+    s.refresh(exp)
+
+    set_client_expense_external_ref(s, exp.id, "   ")
+    s.refresh(exp)
+    assert exp.external_ref is None
+
+
+def test_set_external_ref_rejects_missing(session):
+    import pytest
+    from main import set_client_expense_external_ref
+
+    s, _ = session
+    with pytest.raises(ValueError):
+        set_client_expense_external_ref(s, 9999, "REF")
+
+
 def test_get_or_create_unassigned_customer_is_idempotent(session):
     from database import get_or_create_unassigned_customer
 

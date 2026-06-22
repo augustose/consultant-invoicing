@@ -1,11 +1,14 @@
 import sys
 from pathlib import Path
 from datetime import datetime
+import inspect
+import textwrap
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 
+import main  # noqa: E402
 from main import (  # noqa: E402
     advance_recurrence_date,
     client_expense_can_transition,
@@ -13,6 +16,7 @@ from main import (  # noqa: E402
     client_expense_next_states,
     compute_invoice_totals,
     compute_tax_split,
+    safe_client_notify,
     sanitize_receipt_filename,
 )
 
@@ -57,6 +61,63 @@ def test_compute_tax_split_both_taxes():
     assert tps == 5.0
     assert tvq == 9.98
     assert total == 114.98
+
+
+def test_client_expense_add_form_is_collapsed_and_save_button_is_always_available():
+    source = textwrap.dedent(inspect.getsource(main.client_expenses_page))
+    assert "ui.expansion('Add Client Expense', value=False" in source
+    assert source.index("def save_expense():") < source.index("if ai_ready:")
+    assert source.index("ui.button('Add Expense'") > source.index("def save_expense():")
+
+
+def test_duplicate_total_filter_pauses_programmatic_filter_refreshes():
+    source = textwrap.dedent(inspect.getsource(main.client_expenses_page))
+    assert "filter_controls_paused = {'value': False}" in source
+    assert "if filter_controls_paused['value']:" in source
+    helper = source[source.index("def set_filter_control_values("):source.index("def update_filter(")]
+    assert "filter_controls_paused['value'] = True" in helper
+    assert "filter_controls_paused['value'] = False" in helper
+    duplicate_filter = source[
+        source.index("def filter_by_duplicate_total(total):"):source.index("def refresh_table():")
+    ]
+    assert "set_filter_control_values(min_total=total, max_total=total)" in duplicate_filter
+    assert duplicate_filter.index("set_filter_control_values") < duplicate_filter.index("refresh_table()")
+
+
+def test_safe_client_notify_skips_deleted_client():
+    class FakeOutbox:
+        def __init__(self):
+            self.messages = []
+
+        def enqueue_message(self, message_type, data, target_id):
+            self.messages.append((target_id, message_type, data))
+
+    class FakeClient:
+        id = "client-1"
+
+        def __init__(self, deleted):
+            self._deleted = deleted
+            self.outbox = FakeOutbox()
+
+    deleted_client = FakeClient(deleted=True)
+    assert safe_client_notify(deleted_client, "Done", color="emerald-500") is False
+    assert deleted_client.outbox.messages == []
+
+    live_client = FakeClient(deleted=False)
+    assert safe_client_notify(live_client, "Done", color="emerald-500", multi_line=True, timeout=8000) is True
+    assert live_client.outbox.messages == [
+        (
+            "client-1",
+            "notify",
+            {
+                "message": "Done",
+                "position": "bottom",
+                "color": "emerald-500",
+                "multiLine": True,
+                "timeout": 8000,
+            },
+        )
+    ]
 
 
 # --- compute_invoice_totals (the tax-engine change) ---
