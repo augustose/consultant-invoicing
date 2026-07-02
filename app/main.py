@@ -438,7 +438,7 @@ def filter_and_sort_invoice_rows(rows, filters):
 
 
 def render_new_invoice_dialog(customers, services, default_customer_id=None, lock_customer=False, redirect_to='/invoices', prefill=None):
-    with ui.dialog() as dialog, ui.card().classes('p-10 w-[950px] premium-card h-auto'):
+    with ui.dialog() as dialog, ui.card().classes('p-10 w-[1100px] max-w-[calc(100vw-2rem)] premium-card h-auto'):
         dialog_title = _('duplicate_invoice') if prefill else _('new_invoice')
         ui.label(dialog_title).classes('text-3xl font-extrabold mb-10 text-slate-900 dark:text-slate-100')
         with ui.row().classes('w-full gap-8 mb-10'):
@@ -458,10 +458,10 @@ def render_new_invoice_dialog(customers, services, default_customer_id=None, loc
 
         def add_row(service_id=None, qty=1.0, price=None, description=''):
             with it_cont:
-                with ui.row().classes('w-full items-center gap-4 p-5 bg-slate-50 rounded-2xl border border-slate-100 dark:bg-slate-800 dark:border-slate-700'):
-                    s_sel = ui.select({s.id: s.name for s in services}, label=_('services'), value=service_id).classes('flex-grow').props('flat borderless')
-                    iqty = ui.number('Qty', value=qty).classes('w-24').props('borderless'); iprc = ui.number('Price', value=price).classes('w-32').props('borderless prefix=$')
-                    idesc = ui.input('Description', value=description).classes('flex-grow').props('borderless')
+                with ui.row().classes('w-full flex-nowrap items-center gap-4 p-5 bg-slate-50 rounded-2xl border border-slate-100 dark:bg-slate-800 dark:border-slate-700 overflow-x-auto'):
+                    s_sel = ui.select({s.id: s.name for s in services}, label=_('services'), value=service_id).classes('flex-grow min-w-[180px] shrink-0').props('flat borderless')
+                    iqty = ui.number('Qty', value=qty).classes('w-20 shrink-0').props('borderless'); iprc = ui.number('Price', value=price).classes('w-28 shrink-0').props('borderless prefix=$')
+                    idesc = ui.input('Description', value=description).classes('flex-grow min-w-[220px] shrink-0').props('borderless')
                     def s_ch(e):
                         service = next((s for s in services if s.id == e.value), None)
                         iprc.set_value(service.unit_price if service else 0.0)
