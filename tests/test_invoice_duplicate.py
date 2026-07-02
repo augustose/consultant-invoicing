@@ -41,3 +41,12 @@ def test_shift_no_match_passthrough():
 def test_shift_multiple_occurrences_in_one_string():
     text = "Covers June 2026, invoiced in June 2026"
     assert shift_month_year_in_text(text, 1) == "Covers July 2026, invoiced in July 2026"
+
+
+def test_shift_french_month_accented_input():
+    assert shift_month_year_in_text("février 2026", 1) == "mars 2026"
+
+
+def test_shift_month_word_boundary_may_vs_mayo():
+    assert shift_month_year_in_text("May 2026", 1) == "June 2026"
+    assert shift_month_year_in_text("mayo 2026", 1) == "junio 2026"

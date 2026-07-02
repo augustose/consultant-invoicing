@@ -252,7 +252,8 @@ _MONTH_OUTPUT_BY_LOCALE = {
 }
 
 _ALL_MONTH_WORDS = sorted(
-    {word for words in _MONTH_NAMES_BY_LOCALE.values() for word in words},
+    {word for words in _MONTH_NAMES_BY_LOCALE.values() for word in words}
+    | {word for words in _MONTH_OUTPUT_BY_LOCALE.values() for word in words},
     key=len, reverse=True,
 )
 _MONTH_YEAR_RE = re.compile(
