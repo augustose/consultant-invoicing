@@ -73,3 +73,29 @@ This document records public architecture and product decisions for Consultant I
 **Decision:** Local source material and implementation notes live under `docs/private/`, which is ignored by git.
 
 **Reason:** Some useful local context should remain available in the workspace without risking accidental publication.
+
+## 2026-07-02: Duplicate Invoice
+
+### 12. Same-Day-Next-Month Date Shift
+
+**Decision:** Duplicating an invoice defaults the new date to the same day of the following month, clamped to the last valid day of shorter months, reusing the existing `advance_recurrence_date` helper.
+
+**Reason:** Matches how recurring profiles already advance dates, so the app has one date-rollover rule instead of two, and covers the common case of re-billing a recurring engagement one month ahead.
+
+### 13. Month + Year Rollover in Descriptions via Regex (EN/FR/ES)
+
+**Decision:** Line-item descriptions are scanned once, when the duplicate dialog opens, for a month name (English, French, or Spanish, accents optional) followed by a 4-digit year, and any match is advanced by the same number of months as the date shift. Everything else in the description is left untouched, and the description is not recalculated if the user edits the date field afterward.
+
+**Reason:** Most recurring line items only reference the billing period as free text (e.g. "Consulting - June 2026"); auto-advancing that text saves manual editing without requiring a structured billing-period field. Recomputing live on every date edit was judged unnecessary complexity (YAGNI) since the description stays fully editable regardless.
+
+### 14. No Duplicate Lineage Tracking in the DB
+
+**Decision:** Duplicated invoices are plain new Draft invoices with a fresh invoice number; no `duplicated_from_id` or similar lineage field was added to the schema, and there is no bulk-duplicate action.
+
+**Reason:** Nothing in the current workflow needs to trace an invoice back to the one it was cloned from, and adding the column, migration, and UI for it would be speculative. Bulk-duplicate has no stated use case either. Both can be added later if a real need shows up.
+
+### 15. Extended the Existing New-Invoice Dialog Instead of a Parallel One
+
+**Decision:** The duplicate feature reuses `render_new_invoice_dialog` (extended with an optional `prefill` argument) rather than introducing a separate `create_invoice_dialog` function, which was the original design-doc plan.
+
+**Reason:** While this feature was in progress, other in-progress work had already extracted the "New Invoice" dialog into `render_new_invoice_dialog`. Building a second, parallel dialog function would have duplicated a large block of dialog-building and save logic; extending the existing one kept a single source of truth for the invoice form.

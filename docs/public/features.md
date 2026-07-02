@@ -26,6 +26,7 @@ This document describes the current public feature scope for Consultant Invoicin
 - Display Sent invoices as Overdue after their due date.
 - Preview invoices as HTML and download rendered PDFs.
 - Support custom HTML invoice templates from Settings.
+- Duplicate an existing invoice into a new pre-filled Draft, rolling the date to the same day next month and advancing month + year mentions in line-item descriptions.
 
 ## 4. Recurring Billing
 
