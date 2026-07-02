@@ -439,7 +439,7 @@ def filter_and_sort_invoice_rows(rows, filters):
 
 def render_new_invoice_dialog(customers, services, default_customer_id=None, lock_customer=False, redirect_to='/invoices', prefill=None):
     with ui.dialog() as dialog, ui.card().classes('p-10 w-[950px] premium-card h-auto'):
-        dialog_title = 'Duplicate Invoice' if prefill else _('new_invoice')
+        dialog_title = _('duplicate_invoice') if prefill else _('new_invoice')
         ui.label(dialog_title).classes('text-3xl font-extrabold mb-10 text-slate-900 dark:text-slate-100')
         with ui.row().classes('w-full gap-8 mb-10'):
             c_sel = ui.select({c.id: c.name for c in customers}, label=_('customers'), value=(prefill['customer_id'] if prefill else default_customer_id)).classes('flex-1').props('outlined rounded' + (' disable' if lock_customer else ''))
@@ -463,8 +463,10 @@ def render_new_invoice_dialog(customers, services, default_customer_id=None, loc
                     iqty = ui.number('Qty', value=qty).classes('w-24').props('borderless'); iprc = ui.number('Price', value=price).classes('w-32').props('borderless prefix=$')
                     idesc = ui.input('Description', value=description).classes('flex-grow').props('borderless')
                     def s_ch(e):
-                        p = next((s.unit_price for s in services if s.id == e.value), 0.0)
-                        iprc.set_value(p); update_totals()
+                        service = next((s for s in services if s.id == e.value), None)
+                        iprc.set_value(service.unit_price if service else 0.0)
+                        idesc.set_value(invoice_item_description(service) if service else '')
+                        update_totals()
                     s_sel.on_value_change(s_ch); iqty.on_value_change(update_totals); iprc.on_value_change(update_totals)
                     line_items.append({'s': s_sel, 'q': iqty, 'p': iprc, 'd': idesc})
         if prefill:
@@ -510,6 +512,11 @@ def render_new_invoice_dialog(customers, services, default_customer_id=None, loc
         with ui.row().classes('w-full justify-end gap-4 mt-8'):
             ui.button('Discard', on_click=dialog.close).props('flat no-caps').classes('text-slate-400')
             ui.button('Save Invoice', on_click=save).classes('btn-primary px-10 h-14 rounded-2xl')
+    if prefill is not None:
+        # Ad-hoc dialogs built per Duplicate click aren't reused like the static
+        # page-load dialogs — delete the element tree once hidden to avoid leaking
+        # a dialog instance on every click.
+        dialog.on('hide', dialog.delete)
     return dialog
 
 
@@ -520,7 +527,7 @@ TRANSLATIONS = {
         'customers': 'Customers', 'services': 'Services', 'accounts': 'Accounts',
         'reports': 'Reports', 'expenses': 'Expenses', 'client_expenses': 'Client Expenses', 'settings': 'Settings', 'help': 'Help', 'welcome': 'Welcome back, Consultant',
         'overdue': 'OVERDUE', 'draft': 'DRAFT / PENDING', 'paid': 'PAID (TOTAL)',
-        'new_invoice': 'New Invoice', 'add_customer': 'Add Customer', 'add_service': 'Add Service',
+        'new_invoice': 'New Invoice', 'duplicate_invoice': 'Duplicate Invoice', 'add_customer': 'Add Customer', 'add_service': 'Add Service',
         'mark_paid': 'Mark as Paid', 'download_pdf': 'Download PDF', 'preview': 'Preview',
         'export_data': 'Export Data for Accountant', 'all_invoices': 'All Invoices',
         'next_billing': 'Upcoming Billing Tasks', 'recent_activity': 'Recent Activity', 
@@ -533,7 +540,7 @@ TRANSLATIONS = {
         'customers': 'Clientes', 'services': 'Servicios', 'accounts': 'Cuentas',
         'reports': 'Reportes', 'expenses': 'Gastos', 'client_expenses': 'Gastos de Cliente', 'settings': 'Configuración', 'help': 'Ayuda', 'welcome': 'Bienvenido de nuevo, Consultor',
         'overdue': 'VENCIDO', 'draft': 'BORRADOR / PENDIENTE', 'paid': 'PAGADO (TOTAL)',
-        'new_invoice': 'Nueva Factura', 'add_customer': 'Agregar Cliente', 'add_service': 'Agregar Servicio',
+        'new_invoice': 'Nueva Factura', 'duplicate_invoice': 'Duplicar Factura', 'add_customer': 'Agregar Cliente', 'add_service': 'Agregar Servicio',
         'mark_paid': 'Marcar como Pagado', 'download_pdf': 'Descargar PDF', 'preview': 'Vista Previa',
         'export_data': 'Exportar para Contador', 'all_invoices': 'Todas las Facturas',
         'next_billing': 'Próximas Tareas de Cobro', 'recent_activity': 'Actividad Reciente',
