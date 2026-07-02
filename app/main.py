@@ -303,6 +303,26 @@ def shift_month_year_in_text(text: str, months: int = 1) -> str:
     return _MONTH_YEAR_RE.sub(replace, text)
 
 
+def build_duplicate_invoice_prefill(invoice, items) -> dict:
+    """Prefill data for a new Draft invoice cloned from `invoice`/`items`.
+
+    Date rolls to the same day next month (clamped to month-end).
+    Each line's description has any Month+Year mention advanced by one month;
+    everything else about the line (service, qty, price) is copied verbatim.
+    """
+    new_date = advance_recurrence_date(invoice.date, invoice.date.day)
+    lines = [
+        {
+            "service_id": item.service_id,
+            "qty": item.quantity,
+            "price": item.unit_price,
+            "description": shift_month_year_in_text(item.description, 1),
+        }
+        for item in items
+    ]
+    return {"customer_id": invoice.customer_id, "date": new_date, "lines": lines}
+
+
 def can_cancel_invoice(status: str) -> bool:
     return status == "Draft"
 
