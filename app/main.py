@@ -237,6 +237,71 @@ def invoice_item_description(service) -> str:
     return service.name
 
 
+_MONTH_NAMES_BY_LOCALE = {
+    "en": ["january", "february", "march", "april", "may", "june", "july",
+           "august", "september", "october", "november", "december"],
+    "fr": ["janvier", "fevrier", "mars", "avril", "mai", "juin", "juillet",
+           "aout", "septembre", "octobre", "novembre", "decembre"],
+    "es": ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+           "agosto", "septiembre", "octubre", "noviembre", "diciembre"],
+}
+# Canonical output name per locale, index-aligned with _MONTH_NAMES_BY_LOCALE.
+_MONTH_OUTPUT_BY_LOCALE = {
+    "fr": ["janvier", "février", "mars", "avril", "mai", "juin", "juillet",
+           "août", "septembre", "octobre", "novembre", "décembre"],
+}
+
+_ALL_MONTH_WORDS = sorted(
+    {word for words in _MONTH_NAMES_BY_LOCALE.values() for word in words},
+    key=len, reverse=True,
+)
+_MONTH_YEAR_RE = re.compile(
+    r"\b(" + "|".join(_ALL_MONTH_WORDS) + r")\b\s+(\d{4})",
+    re.IGNORECASE,
+)
+
+
+def _normalize_month_word(word: str) -> str:
+    return word.lower().replace("é", "e").replace("û", "u").replace("è", "e")
+
+
+def _month_index(word: str):
+    normalized = _normalize_month_word(word)
+    for locale, words in _MONTH_NAMES_BY_LOCALE.items():
+        if normalized in words:
+            return locale, words.index(normalized)
+    return None, None
+
+
+def _apply_case_style(sample: str, word: str) -> str:
+    if sample.isupper():
+        return word.upper()
+    if sample[:1].isupper():
+        return word.capitalize()
+    return word.lower()
+
+
+def shift_month_year_in_text(text: str, months: int = 1) -> str:
+    """Advance every "<Month> <Year>" mention in text by `months`.
+
+    Recognizes English, French, and Spanish month names (accents optional).
+    Text with no recognizable month+year is returned unchanged.
+    """
+    def replace(match: re.Match) -> str:
+        month_word, year_str = match.group(1), match.group(2)
+        locale, idx = _month_index(month_word)
+        if locale is None:
+            return match.group(0)
+        total = idx + months
+        new_idx = total % 12
+        new_year = int(year_str) + total // 12
+        output_words = _MONTH_OUTPUT_BY_LOCALE.get(locale, _MONTH_NAMES_BY_LOCALE[locale])
+        new_word = _apply_case_style(month_word, output_words[new_idx])
+        return f"{new_word} {new_year}"
+
+    return _MONTH_YEAR_RE.sub(replace, text)
+
+
 def can_cancel_invoice(status: str) -> bool:
     return status == "Draft"
 
