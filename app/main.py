@@ -1584,7 +1584,7 @@ def client_expenses_page():
                     ('Created at', _fmt_dt(exp.created_at)),
                     ('Updated at', _fmt_dt(exp.updated_at)),
                 ]
-            with ui.dialog() as dialog, ui.card().classes('p-8 w-[620px] max-w-[calc(100vw-2rem)] premium-card'):
+            with ui.dialog() as dialog, ui.card().classes('p-8 w-[620px] max-w-[calc(100vw-2rem)] max-h-[85vh] overflow-y-auto premium-card'):
                 ui.label(exp_desc).classes('text-2xl font-extrabold text-slate-900 dark:text-slate-100')
                 ui.label(f'{cust_name} · ${exp_total:,.2f}').classes('text-slate-500 mb-4')
                 with ui.row().classes('items-center gap-2 mb-4'):
@@ -1594,12 +1594,8 @@ def client_expenses_page():
                 # Full workflow so the current status reads in context.
                 render_client_expense_workflow(framed=False)
 
-                ui.label('Details').classes('text-xs font-black text-slate-400 uppercase tracking-widest')
-                with ui.grid(columns='auto 1fr').classes('gap-x-6 gap-y-2 mt-2 mb-6 w-full'):
-                    for field_label, field_value in detail_rows:
-                        ui.label(field_label).classes('text-sm font-semibold text-slate-500 whitespace-nowrap')
-                        ui.label(field_value).classes('text-sm text-slate-800 dark:text-slate-200 break-all')
-
+                # Primary actions (advance status / attach to invoice) come before the
+                # long reference-only Details grid, so they're visible without scrolling.
                 next_states = client_expense_next_states(cur_status)
                 if next_states:
                     ui.label('Advance status').classes('text-xs font-black text-slate-400 uppercase tracking-widest')
@@ -1616,6 +1612,12 @@ def client_expenses_page():
                         ui.button('Attach', icon='link', on_click=lambda: inv_pick.value and do_attach(expense_id, inv_pick.value, dialog)).props('flat color=indigo-600')
                 elif attached_invoice is not None:
                     ui.label(f'Attached to invoice #{attached_invoice}').classes('text-sm text-emerald-600 mb-6')
+
+                ui.label('Details').classes('text-xs font-black text-slate-400 uppercase tracking-widest')
+                with ui.grid(columns='auto 1fr').classes('gap-x-6 gap-y-2 mt-2 mb-6 w-full'):
+                    for field_label, field_value in detail_rows:
+                        ui.label(field_label).classes('text-sm font-semibold text-slate-500 whitespace-nowrap')
+                        ui.label(field_value).classes('text-sm text-slate-800 dark:text-slate-200 break-all')
 
                 ui.label('History').classes('text-xs font-black text-slate-400 uppercase tracking-widest')
                 with ui.column().classes('gap-1 mt-2 mb-4'):
