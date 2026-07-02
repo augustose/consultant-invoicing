@@ -437,6 +437,82 @@ def filter_and_sort_invoice_rows(rows, filters):
     return sorted(filtered, key=lambda row: row.get("date") or datetime.min, reverse=True)
 
 
+def render_new_invoice_dialog(customers, services, default_customer_id=None, lock_customer=False, redirect_to='/invoices', prefill=None):
+    with ui.dialog() as dialog, ui.card().classes('p-10 w-[950px] premium-card h-auto'):
+        dialog_title = 'Duplicate Invoice' if prefill else _('new_invoice')
+        ui.label(dialog_title).classes('text-3xl font-extrabold mb-10 text-slate-900 dark:text-slate-100')
+        with ui.row().classes('w-full gap-8 mb-10'):
+            c_sel = ui.select({c.id: c.name for c in customers}, label=_('customers'), value=(prefill['customer_id'] if prefill else default_customer_id)).classes('flex-1').props('outlined rounded' + (' disable' if lock_customer else ''))
+            i_date_value = prefill['date'].strftime('%Y-%m-%d') if prefill else datetime.today().strftime('%Y-%m-%d')
+            i_date = ui.input('Invoice Date', value=i_date_value).classes('w-48').props('outlined rounded append-icon=calendar_today')
+        line_items = []
+        it_cont = ui.column().classes('w-full gap-3 mb-8')
+        # Placeholders for totals labels
+        totals_labels = {}
+        def update_totals():
+            items = [((i['q'].value or 0) * (i['p'].value or 0), True) for i in line_items if i['s'].value]
+            sub, tax, tot = compute_invoice_totals(items)
+            if 'sub' in totals_labels: totals_labels['sub'].text = f'${sub:,.2f}'
+            if 'tax' in totals_labels: totals_labels['tax'].text = f'${tax:,.2f}'
+            if 'tot' in totals_labels: totals_labels['tot'].text = f'${tot:,.2f}'
+
+        def add_row(service_id=None, qty=1.0, price=None, description=''):
+            with it_cont:
+                with ui.row().classes('w-full items-center gap-4 p-5 bg-slate-50 rounded-2xl border border-slate-100 dark:bg-slate-800 dark:border-slate-700'):
+                    s_sel = ui.select({s.id: s.name for s in services}, label=_('services'), value=service_id).classes('flex-grow').props('flat borderless')
+                    iqty = ui.number('Qty', value=qty).classes('w-24').props('borderless'); iprc = ui.number('Price', value=price).classes('w-32').props('borderless prefix=$')
+                    idesc = ui.input('Description', value=description).classes('flex-grow').props('borderless')
+                    def s_ch(e):
+                        p = next((s.unit_price for s in services if s.id == e.value), 0.0)
+                        iprc.set_value(p); update_totals()
+                    s_sel.on_value_change(s_ch); iqty.on_value_change(update_totals); iprc.on_value_change(update_totals)
+                    line_items.append({'s': s_sel, 'q': iqty, 'p': iprc, 'd': idesc})
+        if prefill:
+            for line in prefill['lines']:
+                add_row(service_id=line['service_id'], qty=line['qty'], price=line['price'], description=line['description'])
+        else:
+            add_row()
+        ui.button('Add Line Item', icon='add', on_click=add_row).props('flat no-caps text-color=indigo-600').classes('mt-2 h-12 rounded-xl')
+        with ui.row().classes('w-full justify-end mt-12 py-8 border-t border-slate-100 dark:border-slate-800'):
+            with ui.column().classes('w-80 gap-3 text-right'):
+                with ui.row().classes('w-full justify-between'):
+                    ui.label(_('subtotal')).classes('text-slate-500 font-medium')
+                    totals_labels['sub'] = ui.label('$0.00').classes('text-2xl font-bold')
+                with ui.row().classes('w-full justify-between'):
+                    ui.label(_('tax')).classes('text-slate-500 font-medium')
+                    totals_labels['tax'] = ui.label('$0.00').classes('text-slate-500')
+                with ui.row().classes('w-full justify-between pt-4 mt-2 border-t-2 border-slate-900 dark:border-slate-200'):
+                    ui.label(_('total')).classes('text-xl font-bold')
+                    totals_labels['tot'] = ui.label('$0.00').classes('text-3xl font-black text-indigo-600')
+                update_totals() # Initialize
+
+        def save():
+            if not c_sel.value: return ui.notify('Pick a client!', color='red-500')
+            try:
+                with Session(engine) as s:
+                    items = [(i['q'].value * i['p'].value, True) for i in line_items if i['s'].value]
+                    sub, tax, tot = compute_invoice_totals(items)
+                    existing_invoices = s.exec(select(Invoice)).all()
+                    inv = Invoice(number=next_invoice_number(existing_invoices), customer_id=c_sel.value, date=datetime.strptime(i_date.value, '%Y-%m-%d'), subtotal=sub, tax_total=tax, total=tot, status='Draft')
+                    s.add(inv); s.commit(); s.refresh(inv)
+                    for i in line_items:
+                        if i['s'].value:
+                            service = next(ser for ser in services if ser.id == i['s'].value)
+                            description = (i['d'].value or '').strip() or invoice_item_description(service)
+                            s.add(InvoiceItem(invoice_id=inv.id, service_id=i['s'].value, description=description, quantity=i['q'].value, unit_price=i['p'].value, total=i['q'].value*i['p'].value))
+                    s.commit()
+                    logger.info(f"Nueva factura creada: #{inv.number}, total=${inv.total:,.2f}, cliente_id={inv.customer_id}")
+                    ui.notify('Invoice Saved!'); dialog.close(); ui.navigate.to(redirect_to)
+            except Exception as e:
+                logger.exception("Error al guardar nueva factura")
+                ui.notify(f'Error al guardar: {e}', color='red-500')
+
+        with ui.row().classes('w-full justify-end gap-4 mt-8'):
+            ui.button('Discard', on_click=dialog.close).props('flat no-caps').classes('text-slate-400')
+            ui.button('Save Invoice', on_click=save).classes('btn-primary px-10 h-14 rounded-2xl')
+    return dialog
+
+
 # --- i18n System ---
 TRANSLATIONS = {
     'en': {
@@ -661,6 +737,17 @@ def mark_invoice_as_cancelled_action(iid):
         return
     _update_invoice_status(iid, 'Cancelled', 'Invoice cancelled.', 'red-500')
 
+
+def duplicate_invoice_action(inv_id, customers, services):
+    with Session(engine) as s:
+        inv = s.get(Invoice, inv_id)
+        if inv is None:
+            return ui.notify('Invoice not found', color='red-500')
+        items = s.exec(select(InvoiceItem).where(InvoiceItem.invoice_id == inv_id)).all()
+        prefill = build_duplicate_invoice_prefill(inv, items)
+    dialog = render_new_invoice_dialog(customers, services, prefill=prefill)
+    dialog.open()
+
 # --- Pages ---
 @ui.page('/invoices')
 def invoices_page():
@@ -676,71 +763,8 @@ def invoices_page():
                 ui.label(_('invoices')).classes('text-4xl font-extrabold text-slate-900 dark:text-slate-100 tracking-tight')
                 ui.label(_('all_invoices')).classes('text-slate-500 text-lg')
             
-            with ui.dialog() as dialog, ui.card().classes('p-10 w-[950px] premium-card h-auto'):
-                ui.label(_('new_invoice')).classes('text-3xl font-extrabold mb-10 text-slate-900 dark:text-slate-100')
-                with ui.row().classes('w-full gap-8 mb-10'):
-                    c_sel = ui.select({c.id: c.name for c in customers}, label=_('customers')).classes('flex-1').props('outlined rounded')
-                    i_date = ui.input('Invoice Date', value=datetime.today().strftime('%Y-%m-%d')).classes('w-48').props('outlined rounded append-icon=calendar_today')
-                line_items = []
-                it_cont = ui.column().classes('w-full gap-3 mb-8')
-                # Placeholders for totals labels
-                totals_labels = {}
-                def update_totals():
-                    items = [((i['q'].value or 0) * (i['p'].value or 0), True) for i in line_items if i['s'].value]
-                    sub, tax, tot = compute_invoice_totals(items)
-                    if 'sub' in totals_labels: totals_labels['sub'].text = f'${sub:,.2f}'
-                    if 'tax' in totals_labels: totals_labels['tax'].text = f'${tax:,.2f}'
-                    if 'tot' in totals_labels: totals_labels['tot'].text = f'${tot:,.2f}'
-
-                def add_row():
-                    with it_cont:
-                        with ui.row().classes('w-full items-center gap-4 p-5 bg-slate-50 rounded-2xl border border-slate-100 dark:bg-slate-800 dark:border-slate-700'):
-                            s_sel = ui.select({s.id: s.name for s in services}, label=_('services')).classes('flex-grow').props('flat borderless')
-                            iqty = ui.number('Qty', value=1.0).classes('w-24').props('borderless'); iprc = ui.number('Price').classes('w-32').props('borderless prefix=$')
-                            def s_ch(e):
-                                p = next((s.unit_price for s in services if s.id == e.value), 0.0)
-                                iprc.set_value(p); update_totals()
-                            s_sel.on_value_change(s_ch); iqty.on_value_change(update_totals); iprc.on_value_change(update_totals)
-                            line_items.append({'s': s_sel, 'q': iqty, 'p': iprc})
-                add_row()
-                ui.button('Add Line Item', icon='add', on_click=add_row).props('flat no-caps text-color=indigo-600').classes('mt-2 h-12 rounded-xl')
-                with ui.row().classes('w-full justify-end mt-12 py-8 border-t border-slate-100 dark:border-slate-800'):
-                    with ui.column().classes('w-80 gap-3 text-right'):
-                        with ui.row().classes('w-full justify-between'): 
-                            ui.label(_('subtotal')).classes('text-slate-500 font-medium')
-                            totals_labels['sub'] = ui.label('$0.00').classes('text-2xl font-bold')
-                        with ui.row().classes('w-full justify-between'): 
-                            ui.label(_('tax')).classes('text-slate-500 font-medium')
-                            totals_labels['tax'] = ui.label('$0.00').classes('text-slate-500')
-                        with ui.row().classes('w-full justify-between pt-4 mt-2 border-t-2 border-slate-900 dark:border-slate-200'): 
-                            ui.label(_('total')).classes('text-xl font-bold')
-                            totals_labels['tot'] = ui.label('$0.00').classes('text-3xl font-black text-indigo-600')
-                        update_totals() # Initialize
-
-                def save():
-                    if not c_sel.value: return ui.notify('Pick a client!', color='red-500')
-                    try:
-                        with Session(engine) as s:
-                            items = [(i['q'].value * i['p'].value, True) for i in line_items if i['s'].value]
-                            sub, tax, tot = compute_invoice_totals(items)
-                            existing_invoices = s.exec(select(Invoice)).all()
-                            inv = Invoice(number=next_invoice_number(existing_invoices), customer_id=c_sel.value, date=datetime.strptime(i_date.value, '%Y-%m-%d'), subtotal=sub, tax_total=tax, total=tot, status='Draft')
-                            s.add(inv); s.commit(); s.refresh(inv)
-                            for i in line_items:
-                                if i['s'].value:
-                                    service = next(ser for ser in services if ser.id == i['s'].value)
-                                    s.add(InvoiceItem(invoice_id=inv.id, service_id=i['s'].value, description=invoice_item_description(service), quantity=i['q'].value, unit_price=i['p'].value, total=i['q'].value*i['p'].value))
-                            s.commit()
-                            logger.info(f"Nueva factura creada: #{inv.number}, total=${inv.total:,.2f}, cliente_id={inv.customer_id}")
-                            ui.notify('Invoice Saved!'); dialog.close(); ui.navigate.to('/invoices')
-                    except Exception as e:
-                        logger.exception("Error al guardar nueva factura")
-                        ui.notify(f'Error al guardar: {e}', color='red-500')
-
-                with ui.row().classes('w-full justify-end gap-4 mt-8'):
-                    ui.button('Discard', on_click=dialog.close).props('flat no-caps').classes('text-slate-400')
-                    ui.button('Save Invoice', on_click=save).classes('btn-primary px-10 h-14 rounded-2xl')
-            ui.button(_('new_invoice'), icon='add_circle', on_click=dialog.open).classes('btn-primary px-8 h-14 rounded-2xl shadow-xl')
+            new_invoice_dialog = render_new_invoice_dialog(customers, services)
+            ui.button(_('new_invoice'), icon='add_circle', on_click=new_invoice_dialog.open).classes('btn-primary px-8 h-14 rounded-2xl shadow-xl')
 
         filter_state = {
             "query": "",
@@ -780,8 +804,8 @@ def invoices_page():
                     cols = invoice_list_columns(_('customers'))
                     table = ui.table(columns=cols, rows=rows, row_key='id').classes('w-full border-none shadow-none')
                     table.add_slot('body-cell-status', '''<q-td :props="props"><q-badge :color="props.row.status === 'Paid' ? 'emerald-500' : (props.row.status === 'Sent' ? 'indigo-500' : (props.row.status === 'Overdue' ? 'orange-500' : (props.row.status === 'Written Off' ? 'slate-500' : (props.row.status === 'Cancelled' ? 'red-500' : 'amber-500'))))" :style="{padding:'8px 16px',borderRadius:'100px',fontWeight:'700',fontSize:'10px'}">{{ props.row.status }}</q-badge></q-td>''')
-                    table.add_slot('body-cell-actions', '''<q-td :props="props"><q-btn flat round icon="visibility" title="Preview" @click="$parent.$emit('preview', props.row.id)" /><q-btn flat round color="indigo-600" icon="file_download" title="Download PDF" @click="$parent.$emit('download', props.row.id)" /><q-btn v-if="props.row.can_send" flat round color="indigo-400" icon="send" title="Mark as Sent" @click="$parent.$emit('sent', props.row.id)" /><q-btn v-if="props.row.can_mark_paid" flat round color="emerald-500" icon="check" title="Mark as Paid" @click="$parent.$emit('paid', props.row.id)" /><q-btn v-if="props.row.can_write_off" flat round color="amber-600" icon="money_off" title="Write off invoice" @click="$parent.$emit('writeoff', props.row.id)" /><q-btn v-if="props.row.can_cancel" flat round color="red-300" icon="cancel" title="Cancel draft invoice" @click="$parent.$emit('cancel', props.row.id)" /></q-td>''')
-                    table.on('preview', lambda e: open_invoice_preview(e.args)); table.on('sent', lambda e: mark_invoice_as_sent_action(e.args)); table.on('paid', lambda e: mark_invoice_as_paid_action(e.args)); table.on('cancel', lambda e: mark_invoice_as_cancelled_action(e.args)); table.on('writeoff', lambda e: mark_invoice_as_written_off_action(e.args)); table.on('download', lambda e: ui.run_javascript(f'window.open("/download/{e.args}", "_blank")'))
+                    table.add_slot('body-cell-actions', '''<q-td :props="props"><q-btn flat round icon="visibility" title="Preview" @click="$parent.$emit('preview', props.row.id)" /><q-btn flat round color="indigo-600" icon="file_download" title="Download PDF" @click="$parent.$emit('download', props.row.id)" /><q-btn v-if="props.row.can_send" flat round color="indigo-400" icon="send" title="Mark as Sent" @click="$parent.$emit('sent', props.row.id)" /><q-btn v-if="props.row.can_mark_paid" flat round color="emerald-500" icon="check" title="Mark as Paid" @click="$parent.$emit('paid', props.row.id)" /><q-btn v-if="props.row.can_write_off" flat round color="amber-600" icon="money_off" title="Write off invoice" @click="$parent.$emit('writeoff', props.row.id)" /><q-btn v-if="props.row.can_cancel" flat round color="red-300" icon="cancel" title="Cancel draft invoice" @click="$parent.$emit('cancel', props.row.id)" /><q-btn flat round color="slate-500" icon="content_copy" title="Duplicate" @click="$parent.$emit('duplicate', props.row.id)" /></q-td>''')
+                    table.on('preview', lambda e: open_invoice_preview(e.args)); table.on('sent', lambda e: mark_invoice_as_sent_action(e.args)); table.on('paid', lambda e: mark_invoice_as_paid_action(e.args)); table.on('cancel', lambda e: mark_invoice_as_cancelled_action(e.args)); table.on('writeoff', lambda e: mark_invoice_as_written_off_action(e.args)); table.on('download', lambda e: ui.run_javascript(f'window.open("/download/{e.args}", "_blank")')); table.on('duplicate', lambda e: duplicate_invoice_action(e.args, customers, services))
 
         def update_invoice_filter(key, value):
             filter_state[key] = value
@@ -2381,7 +2405,7 @@ def customers_page():
                     edit_row.set_visibility(False)
 
                     with display:
-                        ui.label(cust.name).classes('flex-1 font-semibold')
+                        ui.label(cust.name).classes('flex-1 font-semibold cursor-pointer text-indigo-600 hover:underline').on('click', lambda cid=cust.id: ui.navigate.to(f'/customer/{cid}'))
                         ui.label(cust.email).classes('w-52 shrink-0 text-slate-500 text-sm truncate')
                         ui.label(cust.phone or '—').classes('w-36 shrink-0 text-slate-500 text-sm')
                         ui.label(cust.contact or '—').classes('w-36 shrink-0 text-slate-500 text-sm')
@@ -2470,6 +2494,60 @@ def customers_page():
             ui.button('Add Customer', icon='add_circle', on_click=open_add_customer).classes('btn-primary h-12 rounded-xl px-6')
         container = ui.column().classes('w-full gap-2')
         render_customers(container)
+
+@ui.page('/customer/{customer_id}')
+def customer_detail_page(customer_id: int):
+    inject_premium_styles(); create_menu('/customers')
+    today = datetime.today()
+    with Session(engine) as s:
+        cust = s.get(Customer, customer_id)
+        if not cust:
+            ui.notify('Customer not found', color='red-500')
+            ui.navigate.to('/customers')
+            return
+        customers = s.exec(select(Customer)).all()
+        services = s.exec(select(Service)).all()
+        invoices = s.exec(select(Invoice).where(Invoice.customer_id == customer_id)).all()
+
+    with ui.column().classes('w-full p-8 max-w-7xl mx-auto animate-fade-in'):
+        ui.button('Back to Customers', icon='arrow_back', on_click=lambda: ui.navigate.to('/customers')).props('flat no-caps').classes('text-slate-400 -ml-4 mb-4')
+
+        with ui.card().classes('w-full p-8 premium-card mb-8'):
+            ui.label(cust.name).classes('text-3xl font-extrabold text-slate-900 dark:text-slate-100 mb-6')
+            with ui.row().classes('w-full gap-12 flex-wrap'):
+                with ui.column().classes('gap-1'):
+                    ui.label('EMAIL').classes('text-[11px] font-black text-slate-400 uppercase tracking-widest')
+                    ui.label(cust.email or '—').classes('text-slate-700 dark:text-slate-300')
+                with ui.column().classes('gap-1'):
+                    ui.label('PHONE').classes('text-[11px] font-black text-slate-400 uppercase tracking-widest')
+                    ui.label(cust.phone or '—').classes('text-slate-700 dark:text-slate-300')
+                with ui.column().classes('gap-1'):
+                    ui.label('CONTACT').classes('text-[11px] font-black text-slate-400 uppercase tracking-widest')
+                    ui.label(cust.contact or '—').classes('text-slate-700 dark:text-slate-300')
+                with ui.column().classes('gap-1'):
+                    ui.label('ADDRESS').classes('text-[11px] font-black text-slate-400 uppercase tracking-widest')
+                    ui.label(cust.address or '—').classes('text-slate-700 dark:text-slate-300')
+
+        with ui.row().classes('w-full justify-between items-end mb-6'):
+            ui.label(f'Invoices for {cust.name}').classes('text-2xl font-extrabold text-slate-900 dark:text-slate-100')
+            new_invoice_dialog = render_new_invoice_dialog(customers, services, default_customer_id=cust.id, lock_customer=True, redirect_to=f'/customer/{cust.id}')
+            ui.button('Create invoice for this customer', icon='add_circle', on_click=new_invoice_dialog.open).classes('btn-primary px-6 h-12 rounded-xl')
+
+        rows = filter_and_sort_invoice_rows(
+            [build_invoice_list_row(i, customers, today=today) for i in invoices],
+            {"sort": "Date newest"},
+        )
+        if not rows:
+            with ui.card().classes('w-full p-10 premium-card items-center justify-center'):
+                ui.icon('receipt_long', size='40px', color='slate-300')
+                ui.label('No invoices yet').classes('text-slate-400 text-sm mt-2')
+        else:
+            with ui.card().classes('w-full p-0 overflow-hidden premium-card'):
+                cols = [c for c in invoice_list_columns(_('customers')) if c['name'] != 'cust']
+                table = ui.table(columns=cols, rows=rows, row_key='id').classes('w-full border-none shadow-none')
+                table.add_slot('body-cell-status', '''<q-td :props="props"><q-badge :color="props.row.status === 'Paid' ? 'emerald-500' : (props.row.status === 'Sent' ? 'indigo-500' : (props.row.status === 'Overdue' ? 'orange-500' : (props.row.status === 'Written Off' ? 'slate-500' : (props.row.status === 'Cancelled' ? 'red-500' : 'amber-500'))))" :style="{padding:'8px 16px',borderRadius:'100px',fontWeight:'700',fontSize:'10px'}">{{ props.row.status }}</q-badge></q-td>''')
+                table.add_slot('body-cell-actions', '''<q-td :props="props"><q-btn flat round icon="visibility" title="Preview" @click="$parent.$emit('preview', props.row.id)" /></q-td>''')
+                table.on('preview', lambda e: open_invoice_preview(e.args))
 
 @ui.page('/services')
 def services_page():
